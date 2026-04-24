@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local config and data
+.env
+.env.local
+config/mboxer.yaml
+var/*.sqlite
+var/*.sqlite-*
+var/log/*.log
+
+# Large/private data
+*.mbox
+data/mboxes/*
+data/attachments/*
+exports/notebooklm/*
+exports/rag/*
+exports/manifests/*
+!data/mboxes/.gitkeep
+!data/attachments/.gitkeep
+!exports/notebooklm/.gitkeep
+!exports/rag/.gitkeep
+!var/log/.gitkeep
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

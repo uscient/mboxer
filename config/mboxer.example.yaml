@@ -1,0 +1,198 @@
+project:
+  name: mboxer
+  repo: xormania/mboxer
+  default_database: var/mboxer.sqlite
+
+# Account settings.
+# Use: mboxer account add <account-key> --email <address>
+# Default behavior operates on one account at a time.
+# Cross-account operations must be explicit via --accounts key1,key2.
+accounts:
+  default_account: null      # auto-select when only one account exists
+  require_account: true      # fail if multiple accounts exist and --account is omitted
+
+paths:
+  database: var/mboxer.sqlite
+  mbox_dir: data/mboxes
+  attachments_dir: data/attachments
+  exports_dir: exports
+  notebooklm_dir: exports/notebooklm
+  rag_dir: exports/rag
+  manifests_dir: exports/manifests
+  logs_dir: var/log
+
+ingest:
+  batch_commit_size: 500
+  resume: true
+  extract_attachments: true
+  store_body_text: true
+  store_body_html: false
+  max_body_chars: 50000
+  dedupe_by:
+    - message_id
+    - body_hash
+
+classification:
+  provider: ollama
+  model: llama3.1:8b
+  endpoint: http://localhost:11434/api/generate
+  classify_level: thread # message | thread
+  confidence_review_threshold: 0.70
+  allow_category_proposals: true
+  require_review_for_new_categories: true
+
+# Category paths are slash-delimited and later become directories.
+taxonomy:
+  locked_categories:
+    - medical
+    - medical/hospital-billing
+    - medical/pharmacy
+    - medical/insurance
+    - legal
+    - legal/law-firm-correspondence
+    - finance
+    - household
+    - household/utilities
+    - postal
+    - postal/usps-informed-delivery
+    - family
+    - family/recipient-family
+    - personal-correspondence
+    - government
+    - shopping
+    - technology
+    - noise
+    - noise/marketing
+    - noise/newsletters
+    - noise/spam
+
+rules:
+  - name: usps-informed-delivery
+    description: USPS daily digest / mail preview emails.
+    match:
+      from_contains:
+        - usps
+      subject_contains:
+        - informed delivery
+        - daily digest
+    assign:
+      category_path: postal/usps-informed-delivery
+      notebooklm_priority: include_metadata_only
+      sensitivity: medium
+      export_profile: metadata-only
+
+  - name: common-law-firm
+    description: Replace example domain with known law firm domain(s).
+    match:
+      from_domain:
+        - examplelawfirm.com
+    assign:
+      category_path: legal/law-firm-correspondence
+      notebooklm_priority: include
+      sensitivity: high
+      export_profile: scrubbed
+
+  - name: obvious-utility-bill
+    description: Catch obvious utility/payment statement emails before LLM classification.
+    match:
+      subject_contains:
+        - bill
+        - statement
+        - payment due
+        - autopay
+        - utility
+    assign_hint:
+      category_path: household/utilities
+      sensitivity: medium
+      export_profile: scrubbed
+
+security:
+  default_export_profile: scrubbed
+  scan_enabled: true
+  scrub_enabled: true
+  scan_attachments: true
+  quarantine_unsafe_attachments: true
+  redact_email_addresses: false
+  redact_phone_numbers: true
+  redact_ssn_like_numbers: true
+  redact_credit_card_like_numbers: true
+  redact_physical_addresses: false
+
+exports:
+  notebooklm:
+    # Default export limit profile. This is conservative for Google AI Ultra workflows.
+    profile: ultra_safe
+
+    profiles:
+      standard:
+        max_sources: 50
+        reserved_sources: 10
+        target_sources: 40
+        max_words_per_source: 450000
+        target_words_per_source: 300000
+        max_bytes_per_source: 190000000
+        target_bytes_per_source: 100000000
+        max_messages_per_source: 5000
+
+      plus:
+        max_sources: 100
+        reserved_sources: 20
+        target_sources: 80
+        max_words_per_source: 450000
+        target_words_per_source: 300000
+        max_bytes_per_source: 190000000
+        target_bytes_per_source: 100000000
+        max_messages_per_source: 5000
+
+      pro:
+        max_sources: 300
+        reserved_sources: 50
+        target_sources: 250
+        max_words_per_source: 450000
+        target_words_per_source: 300000
+        max_bytes_per_source: 190000000
+        target_bytes_per_source: 100000000
+        max_messages_per_source: 5000
+
+      ultra:
+        max_sources: 600
+        reserved_sources: 75
+        target_sources: 525
+        max_words_per_source: 450000
+        target_words_per_source: 300000
+        max_bytes_per_source: 190000000
+        target_bytes_per_source: 100000000
+        max_messages_per_source: 5000
+
+      ultra_safe:
+        max_sources: 600
+        reserved_sources: 100
+        target_sources: 450
+        max_words_per_source: 350000
+        target_words_per_source: 225000
+        max_bytes_per_source: 125000000
+        target_bytes_per_source: 75000000
+        max_messages_per_source: 5000
+
+    format:
+      extension: md
+      category_directories: true
+      include_manifest: true
+      include_source_header: true
+      include_message_metadata: true
+      include_attachment_references: true
+      include_security_notes: true
+
+    split_strategy:
+      close_source_when_any_limit_reached: true
+      prefer_thread_integrity: true
+      split_by_category: true
+      split_by_year: true
+      split_oversized_threads: true
+
+  jsonl:
+    enabled: true
+    output_file: exports/rag/messages.jsonl
+    include_clean_body: true
+    include_raw_metadata: true
+    include_classification: true
