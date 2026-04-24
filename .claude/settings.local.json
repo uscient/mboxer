@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -c \"import mailbox; m = mailbox.mbox\\('tests/fixtures/synthetic.mbox'\\); print\\(len\\(list\\(m\\)\\), 'messages'\\); [print\\(' -', msg['subject']\\) for msg in m]\")",
+      "Bash(.venv/bin/pytest --tb=short -q)",
+      "Bash(.venv/bin/mboxer init-db *)",
+      "Bash(.venv/bin/mboxer account *)",
+      "Bash(.venv/bin/mboxer ingest *)",
+      "Bash(.venv/bin/mboxer classify *)",
+      "Bash(.venv/bin/mboxer export *)"
+    ]
+  }
+}

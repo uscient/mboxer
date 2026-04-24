@@ -53,3 +53,33 @@ def get_database_path(config: dict[str, Any], override: str | None = None) -> Pa
 
 def ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+class OllamaConfigError(ConfigError):
+    """Raised when Ollama model resolution fails."""
+
+
+def resolve_ollama_model(config: dict[str, Any], role: str = "classifier", cli_model: str | None = None) -> str:
+    """Resolve the Ollama model name for a given role.
+
+    Precedence (highest to lowest):
+    1. cli_model — explicit --model flag
+    2. classification.ollama.models.<role>
+    3. classification.ollama.default_model
+    4. Raise OllamaConfigError
+    """
+    if cli_model:
+        return cli_model
+
+    role_model = deep_get(config, f"classification.ollama.models.{role}")
+    if role_model:
+        return role_model
+
+    default = deep_get(config, "classification.ollama.default_model")
+    if default:
+        return default
+
+    raise OllamaConfigError(
+        f"No Ollama model configured for role '{role}'. "
+        "Set classification.ollama.models.{role} or classification.ollama.default_model in config."
+    )

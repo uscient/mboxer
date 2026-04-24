@@ -55,6 +55,21 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def attachment_output_path(
+    *,
+    base_dir: Path,
+    account_key: str,
+    date_str: str | None,
+    message_id: str,
+    filename: str,
+) -> Path:
+    """Return the expected storage path for an attachment (does not create directories)."""
+    year = (date_str[:4] if date_str else None) or "undated"
+    msg_slug = slugify(message_id, max_length=60) if message_id else "unknown"
+    safe = _safe_attachment_filename(filename, 0)
+    return base_dir / account_key / year / msg_slug / safe
+
+
 def extract_attachments(
     msg: Message,
     msg_db_id: int,

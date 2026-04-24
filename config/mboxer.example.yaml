@@ -33,13 +33,23 @@ ingest:
     - body_hash
 
 classification:
-  provider: ollama
-  model: llama3.1:8b
-  endpoint: http://localhost:11434/api/generate
-  classify_level: thread # message | thread
+  provider: rules          # rules | ollama
+  level: thread            # message | thread
+  prompt_version: classifier-v1
   confidence_review_threshold: 0.70
   allow_category_proposals: true
   require_review_for_new_categories: true
+  ollama:
+    host: http://localhost:11434
+    default_model: llama3.1:8b
+    timeout_seconds: 60
+    temperature: 0
+    num_ctx: 8192
+    models:
+      classifier: llama3.1:8b
+      summarizer: llama3.1:8b
+      taxonomy_manager: llama3.1:8b
+      security_reviewer: llama3.1:8b
 
 # Category paths are slash-delimited and later become directories.
 taxonomy:

@@ -199,6 +199,82 @@ Copy and customize the example config:
 cp config/mboxer.example.yaml config/mboxer.yaml
 ```
 
+## First run
+
+Complete walkthrough from a fresh checkout to a dry-run export.
+
+**1. Initialize the database**
+
+```bash
+mboxer init-db --config config/mboxer.yaml
+```
+
+**2. Register your account**
+
+```bash
+mboxer account add primary-gmail \
+  --display-name "Primary Gmail" \
+  --email user@example.com \
+  --config config/mboxer.yaml
+```
+
+**3. Verify the account was registered**
+
+```bash
+mboxer account list --config config/mboxer.yaml
+```
+
+**4. Ingest a small test archive first** (see warning below)
+
+```bash
+mboxer ingest data/mboxes/primary-gmail/sample.mbox \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --source-name "Sample" \
+  --extract-attachments \
+  --resume
+```
+
+**5. Classify with rules**
+
+```bash
+mboxer classify \
+  --config config/mboxer.yaml \
+  --account primary-gmail
+```
+
+**6. Dry-run export to verify output shape**
+
+```bash
+mboxer export notebooklm \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --profile ultra_safe \
+  --dry-run
+```
+
+**7. Real export when ready**
+
+```bash
+mboxer export notebooklm \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --profile ultra_safe \
+  --out exports/notebooklm
+```
+
+> **Warning: test with a small MBOX before ingesting large archives.**
+>
+> Gmail MBOX exports can exceed several gigabytes for long-lived accounts.
+> Before ingesting a full archive:
+>
+> 1. Extract a small slice of messages into a separate `.mbox` file and ingest that first.
+> 2. Run `mboxer export notebooklm --dry-run` to verify the output shape.
+> 3. Review the generated exports locally before uploading anything to a cloud service.
+>
+> `--resume` makes ingest restartable, but a full ingest of a large archive still takes
+> significant time and disk space. Running `--dry-run` on exports is free and fast.
+
 ## Getting a Gmail MBOX file
 
 You can export Gmail data from Google Takeout / Google Data Request.
