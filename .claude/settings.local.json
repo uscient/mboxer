@@ -7,7 +7,11 @@
       "Bash(.venv/bin/mboxer account *)",
       "Bash(.venv/bin/mboxer ingest *)",
       "Bash(.venv/bin/mboxer classify *)",
-      "Bash(.venv/bin/mboxer export *)"
+      "Bash(.venv/bin/mboxer export *)",
+      "Bash(.venv/bin/pytest tests/test_manifest.py -v)",
+      "Bash(.venv/bin/pytest -q)",
+      "Read(//tmp/mboxer-manifest-test/**)",
+      "Bash(python3.11 -c \"import csv; [print\\(r\\) for r in csv.DictReader\\(open\\('/tmp/mboxer-manifest-test/test-account/manifest.csv'\\)\\)]\")"
     ]
   }
 }

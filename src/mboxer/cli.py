@@ -418,6 +418,7 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
                 account_id=account["id"],
                 account_key=account["account_key"],
                 account_email=account.get("email_address"),
+                account_display_name=account.get("display_name"),
                 export_profile=args.export_profile,
                 dry_run=args.dry_run,
                 db_path=str(db_path),
@@ -454,7 +455,13 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
 
     conn = open_db(db_path)
     try:
-        result = export_jsonl(conn, config, out_path, account_id=account_id, account_key=account_key)
+        result = export_jsonl(
+            conn, config, out_path,
+            account_id=account_id,
+            account_key=account_key,
+            account_display_name=account.get("display_name"),
+            account_email_address=account.get("email_address"),
+        )
     finally:
         conn.close()
     print(f"[{account_key}] Wrote {result['messages_written']} messages to {out_path}")

@@ -177,12 +177,14 @@ class _SourceWriter:
         self.current_msgs = 0
         self._buf: list[str] = []
         self._active = False
-        self.files_written: list[Path] = []
+        self.file_stats: list[dict[str, Any]] = []
+        self._current_thread_keys: set[str] = set()
+        self._current_date_min: str | None = None
+        self._current_date_max: str | None = None
 
     def _flush(self) -> None:
         if not self._active:
             return
-        # Nest under account_key
         base = self.out_dir / self.account_key
         target_dir = category_to_directory(base, self.category_path, self.date_band)
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -193,14 +195,28 @@ class _SourceWriter:
             self.category_path, self.date_band,
             self.sequence, self.current_msgs, self.db_path,
         )
-        fpath.write_text(header + "\n".join(self._buf), encoding="utf-8")
-        self.files_written.append(fpath)
+        content = header + "\n".join(self._buf)
+        fpath.write_text(content, encoding="utf-8")
+        self.file_stats.append({
+            "path": fpath,
+            "category_path": self.category_path,
+            "date_band": self.date_band,
+            "message_count": self.current_msgs,
+            "thread_count": len(self._current_thread_keys),
+            "word_count": self.current_words,
+            "byte_count": fpath.stat().st_size,
+            "date_min": self._current_date_min,
+            "date_max": self._current_date_max,
+        })
         self.sequence += 1
         self._buf = []
         self._active = False
         self.current_words = 0
         self.current_bytes = 0
         self.current_msgs = 0
+        self._current_thread_keys = set()
+        self._current_date_min = None
+        self._current_date_max = None
 
     def add_message(self, record: dict[str, Any]) -> None:
         chunk = _render_message_md(record)
@@ -223,10 +239,20 @@ class _SourceWriter:
         self.current_bytes += chunk_bytes
         self.current_msgs += 1
 
-    def finish(self) -> list[Path]:
+        if record.get("thread_key"):
+            self._current_thread_keys.add(record["thread_key"])
+        date = record.get("date_utc")
+        if date:
+            if self._current_date_min is None or date < self._current_date_min:
+                self._current_date_min = date
+            if self._current_date_max is None or date > self._current_date_max:
+                self._current_date_max = date
+
+    def finish(self) -> list[dict[str, Any]]:
+        """Flush any remaining buffer and return per-file stats."""
         if self._active:
             self._flush()
-        return self.files_written
+        return self.file_stats
 
 
 def export_notebooklm(
@@ -238,6 +264,7 @@ def export_notebooklm(
     account_id: int | None = None,
     account_key: str = "default",
     account_email: str | None = None,
+    account_display_name: str | None = None,
     export_profile: str | None = None,
     dry_run: bool = False,
     db_path: str = "",
@@ -249,6 +276,7 @@ def export_notebooklm(
 
     groups = _group_by_category_and_band(records)
     effective_budget = limits.effective_source_budget
+    security_profile = (config.get("security") or {}).get("default_export_profile")
 
     stats: dict[str, Any] = {
         "account_key": account_key,
@@ -261,13 +289,16 @@ def export_notebooklm(
 
     if dry_run:
         stats["would_write"] = len(groups)
+        stats["manifest_csv"] = str(out_dir / account_key / "manifest.csv")
+        stats["manifest_json"] = str(out_dir / account_key / "manifest.json")
         return stats
 
     out_dir.mkdir(parents=True, exist_ok=True)
     export_id = _start_export_run(conn, "notebooklm", str(out_dir), limits.profile_name, account_id)
 
-    files_all: list[Path] = []
+    all_file_stats: list[dict[str, Any]] = []
     budget_used = 0
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for (cat_path, band), msgs in sorted(groups.items()):
         if budget_used >= effective_budget:
@@ -280,26 +311,41 @@ def export_notebooklm(
             writer.add_message(msg)
 
         written = writer.finish()
-        files_all.extend(written)
+        all_file_stats.extend(written)
         budget_used += len(written)
         stats["messages_exported"] += len(msgs)
 
-        for fpath in written:
+        for fstat in written:
             conn.execute(
                 "INSERT INTO export_items (account_id, export_id, output_file, category_path) "
                 "VALUES (?, ?, ?, ?)",
-                (account_id, export_id, str(fpath), cat_path),
+                (account_id, export_id, str(fstat["path"]), cat_path),
             )
 
     conn.execute(
         "UPDATE exports SET status = 'completed', finished_at = CURRENT_TIMESTAMP, "
         "source_count = ?, message_count = ? WHERE id = ?",
-        (len(files_all), stats["messages_exported"], export_id),
+        (len(all_file_stats), stats["messages_exported"], export_id),
     )
     conn.commit()
 
-    stats["files_written"] = len(files_all)
+    # Write manifests
+    from .manifest import build_notebooklm_manifest_rows, write_notebooklm_manifest
+    manifest_rows = build_notebooklm_manifest_rows(
+        all_file_stats,
+        account_key=account_key,
+        account_display_name=account_display_name,
+        account_email_address=account_email,
+        export_profile=export_profile,
+        security_profile=security_profile,
+        created_at=now,
+    )
+    csv_path, json_path = write_notebooklm_manifest(out_dir, account_key, manifest_rows)
+
+    stats["files_written"] = len(all_file_stats)
     stats["budget_used"] = budget_used
+    stats["manifest_csv"] = str(csv_path)
+    stats["manifest_json"] = str(json_path)
     return stats
 
 
