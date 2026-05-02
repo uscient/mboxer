@@ -7,12 +7,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .accounts import AccountError, create_account, get_account
+from .accounts import AccountError, get_account
 from .attachments import extract_attachments
 from .config import deep_get, ensure_parent_dir
 from .db import init_db
 from .naming import slugify
-from .normalize import normalize_message, parse_gmail_labels
+from .normalize import normalize_message
 
 
 def _file_sha256(path: Path, chunk: int = 1 << 20) -> str:
@@ -220,7 +220,7 @@ def ingest_mbox(
 
         if force:
             print(
-                f"Warning: --force enabled; existing messages from this account/source may be replaced."
+                "Warning: --force enabled; existing messages from this account/source may be replaced."
             )
 
         resume_run_id: int | None = None
