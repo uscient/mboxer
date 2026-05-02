@@ -361,7 +361,7 @@ def cmd_security_scan(args: argparse.Namespace) -> None:
 
 
 def cmd_export_notebooklm(args: argparse.Namespace) -> None:
-    from .accounts import list_accounts, resolve_account
+    from .accounts import resolve_account
     from .exporters.notebooklm import export_notebooklm
     config, db_path = load_runtime(args)
     limits = resolve_notebooklm_limits(
