@@ -74,24 +74,20 @@ def resolve_notebooklm_limits(
         max_messages_per_source=_require_int(profile, "max_messages_per_source"),
     )
 
-    updates: dict[str, int] = {}
     if max_sources is not None:
-        updates["max_sources"] = max_sources
+        limits = replace(limits, max_sources=max_sources)
     if reserved_sources is not None:
-        updates["reserved_sources"] = reserved_sources
+        limits = replace(limits, reserved_sources=reserved_sources)
     if target_sources is not None:
-        updates["target_sources"] = target_sources
+        limits = replace(limits, target_sources=target_sources)
     if max_words is not None:
-        updates["max_words_per_source"] = max_words
+        limits = replace(limits, max_words_per_source=max_words)
     if target_words is not None:
-        updates["target_words_per_source"] = target_words
+        limits = replace(limits, target_words_per_source=target_words)
     if max_mb is not None:
-        updates["max_bytes_per_source"] = mb_to_bytes(max_mb)
+        limits = replace(limits, max_bytes_per_source=mb_to_bytes(max_mb))
     if target_mb is not None:
-        updates["target_bytes_per_source"] = mb_to_bytes(target_mb)
-
-    if updates:
-        limits = replace(limits, **updates)
+        limits = replace(limits, target_bytes_per_source=mb_to_bytes(target_mb))
 
     return limits
 
