@@ -7,6 +7,8 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+dist/
+build/
 
 # Local config and data
 .env
