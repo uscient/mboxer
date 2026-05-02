@@ -287,7 +287,7 @@ def _run_rule_classification_thread(
     config: dict[str, Any],
     *,
     account_id: int | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
     rules = _load_rules(config)
     if not rules:
         print("No rules defined in config.")
@@ -393,7 +393,7 @@ def run_rule_classification(
     *,
     level: str = "message",
     account_id: int | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
     if level == "thread":
         return _run_rule_classification_thread(conn, config, account_id=account_id)
 

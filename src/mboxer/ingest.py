@@ -327,6 +327,8 @@ def ingest_mbox(
                     if cursor.rowcount > 0:
                         counts["inserted"] += 1
                         msg_db_id = cursor.lastrowid
+                        if msg_db_id is None:
+                            raise RuntimeError("INSERT succeeded but cursor.lastrowid is None")
 
                         if record.get("thread_key"):
                             participants = json.loads(record.get("recipients_json") or "[]")

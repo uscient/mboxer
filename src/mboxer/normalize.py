@@ -54,6 +54,8 @@ def _extract_bodies(msg: Message) -> tuple[str | None, str | None]:
         payload = part.get_payload(decode=True)
         if not payload:
             return None
+        if not isinstance(payload, bytes):
+            return None
         charset = part.get_content_charset("utf-8") or "utf-8"
         try:
             return payload.decode(charset, errors="replace")
