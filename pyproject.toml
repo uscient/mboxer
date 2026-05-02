@@ -3,18 +3,44 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mboxer"
+name = "uscient-mboxer"
 version = "0.1.0"
-description = "Local-first MBOX archive processor for KM, RAG, and NotebookLM source packs."
+description = "Local-first MBOX archive processor for personal data control, search, export, and NotebookLM source packs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-  { name = "David G. Becker" }
+  { name = "uScient" }
 ]
 dependencies = [
   "PyYAML>=6.0.1",
   "requests>=2.31.0"
+]
+keywords = [
+  "mbox",
+  "email",
+  "gmail",
+  "sqlite",
+  "local-first",
+  "privacy",
+  "personal-knowledge",
+  "notebooklm",
+  "rag",
+  "archive"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Communications :: Email",
+  "Topic :: Database",
+  "Topic :: Utilities"
 ]
 
 [project.optional-dependencies]
@@ -28,9 +54,9 @@ pdf = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/xormania/mboxer"
-Repository = "https://github.com/xormania/mboxer"
-Issues = "https://github.com/xormania/mboxer/issues"
+Homepage = "https://uscient.com"
+Repository = "https://github.com/uscient/mboxer"
+Issues = "https://github.com/uscient/mboxer/issues"
 
 [project.scripts]
 mboxer = "mboxer.cli:main"
