@@ -1,6 +1,4 @@
-# mboxer - not usuable yet
-
-Almost done, just need to hook in local AI 
+# mboxer
 
 Create **NotebookLM-ready Markdown source packs** from **Gmail MBOX exports**, with local SQLite, JSONL, and CSV outputs for search, RAG, archive review, and LLM workflows.
 
@@ -18,7 +16,7 @@ Gmail / Google Takeout
   → MBOX file
   → local SQLite index
   → organized Markdown source packs
-  → NotebookLM, RAG, search, review, JSONL, CSV, and future tools
+  → NotebookLM, RAG, search, review, JSONL, and future tools
 ```
 
 ## Why this exists
@@ -41,7 +39,7 @@ Local review works best when everything is inspectable before anything is upload
 
 The main selling point of `mboxer` is converting Gmail MBOX exports into clean, category-organized Markdown files that can be used as NotebookLM sources.
 
-Instead of uploading one giant raw archive, `mboxer` is designed to create structured source packs like:
+Instead of uploading one giant raw archive, `mboxer` creates structured source packs like:
 
 ```text
 exports/notebooklm/
@@ -75,82 +73,90 @@ The goal is to make exported Gmail content easier to:
 
 ## What `mboxer` produces
 
-`mboxer` is designed to turn Gmail MBOX archives into multiple useful formats.
-
 ### NotebookLM Markdown source packs
 
 Markdown is the primary output format.
 
-Markdown exports should be readable, organized, and useful as NotebookLM source material.
-
-Each exported file can preserve useful email context such as:
+Each exported file preserves useful email context:
 
 - subject
-- sender
-- recipients
+- sender and recipients
 - date
 - thread hints
 - category
 - source account
 - cleaned body text
-- attachment references when available
+- attachment references
+
+Export output is split by category, year, and size band to respect NotebookLM source limits.
+A JSON manifest is written alongside each export run.
 
 ### SQLite database
 
 SQLite is the durable local project index.
 
-It allows `mboxer` to support features beyond one-time conversion, including:
+The schema tracks:
 
-- resumable ingest
-- deduplication
-- multi-account separation
-- classification state
-- category review
-- export tracking
-- attachment tracking
-- security review
-- future search tools
-- future local web UI
-- future incremental workflows
+- accounts and MBOX sources
+- messages with normalized metadata and body text
+- Gmail label associations
+- thread groupings with participant and date ranges
+- ingest runs with resumable checkpoint keys
+- ingest errors per run
+- attachments with SHA-256, content type, and extraction status
+- classifications per message and per thread
+- category taxonomy with locked/global flags
+- category proposals for review and approval
+- export items and export run records
+- security findings per message
 
 ### JSONL exports
 
 JSONL is intended for RAG pipelines, embeddings, local LLM tools, and structured downstream processing.
 
-Each line can represent a message, thread, chunk, or export unit depending on the selected export mode.
+Each line represents one message with clean body text, metadata, and classification context.
+Account key is injected into the output path automatically to keep multi-account exports separated.
 
 ### CSV exports
 
-CSV is intended for spreadsheet review, filtering, auditing, lightweight analysis, and manual cleanup.
+CSV export is planned for spreadsheet review, filtering, auditing, and manual cleanup.
 
-Useful CSV columns may include:
+## Current implementation status
 
-- message id
-- account label
-- source name
-- subject
-- sender
-- recipients
-- date
-- category
-- classification confidence
-- attachment count
-- security flags
-- export status
+The core pipeline is implemented and working.
 
-## What you can use it for
+Implemented:
 
-`mboxer` is intended for workflows like:
+- MBOX ingest into SQLite using Python's `mailbox` stdlib
+- resumable ingest with per-run checkpoint keys and batch commits
+- deduplication via `INSERT OR IGNORE` on message identity
+- multi-account separation with per-account keyed storage
+- message normalization: subject, sender, recipients, dates, body text, body hash, word count
+- Gmail label parsing and storage
+- thread grouping with participant aggregation and date ranges
+- attachment extraction to disk with SHA-256 and content-type tracking
+- rule-based classification at both message and thread level
+- thread-level rule classification with message inheritance
+- `assign` (confidence 1.0) and `assign_hint` (confidence 0.75) rule actions
+- category taxonomy with locked categories and proposal workflow
+- category review, approval, and rejection via CLI
+- security scan and scrub hooks
+- NotebookLM Markdown export with category directories, year bands, and size-limit profiles
+- export dry-run mode
+- JSONL export
+- JSON export manifests
+- five NotebookLM limit profiles: `standard`, `plus`, `pro`, `ultra`, `ultra_safe`
+- CLI with subcommands for all pipeline stages
+- YAML config loading with deep key access and environment variable support
+- `pyproject.toml` packaging with optional `pdf` and `dev` extras
 
-- creating NotebookLM-ready source packs from Gmail exports
-- preparing Gmail history for local LLM analysis
-- organizing years of email by topic, project, sender, thread, or category
-- creating searchable Markdown archives
-- exporting structured JSONL for RAG systems
-- exporting CSV for spreadsheet review
-- building a durable local SQLite database over email history
-- preserving data locally before deciding what is safe to upload elsewhere
-- creating a foundation for future tools that work with email archives
+In progress / planned:
+
+- CSV export
+- LLM-based classification via Ollama (config shape is present, wiring is not complete)
+- local web UI for category review
+- incremental export tracking
+- scrub profiles for PII redaction before cloud upload
 
 ## Project identity
 
@@ -159,30 +165,57 @@ Project name:      mboxer
 Python package:    mboxer
 CLI command:       mboxer
 Default database:  var/mboxer.sqlite
+Entry point:       mboxer.cli:main
+Python requires:   >=3.11
 ```
 
-## Current project status
+## Source layout
 
-This repository is an early scaffold and design baseline.
+```text
+src/mboxer/
+  cli.py              # argparse CLI: all subcommands
+  config.py           # YAML config loading, path helpers
+  ingest.py           # MBOX ingest pipeline
+  normalize.py        # message normalization and body extraction
+  classify.py         # rule-based classification (message + thread)
+  taxonomy.py         # category management and proposal workflow
+  accounts.py         # account CRUD and resolution
+  attachments.py      # attachment extraction and storage
+  limits.py           # NotebookLM limit profiles and validation
+  naming.py           # slugify and category path normalization
+  db/
+    schema.sql        # full SQLite schema
+    schema.py         # init_db helper
+    migrations/       # future migration scripts
+  exporters/
+    notebooklm.py     # Markdown source pack exporter
+    jsonl.py          # JSONL exporter
+    manifest.py       # JSON manifest writer
+  security/
+    scan.py           # security scan runner
+    scrub.py          # scrub hooks
+    policy.py         # export policy helpers
 
-It currently defines the intended architecture, workflow, configuration shape, schema direction, and export strategy. The next implementation passes should continue wiring the CLI, ingest pipeline, classification, security scanning, scrubbing, and exporters into the SQLite-backed project model.
+config/
+  mboxer.example.yaml   # full annotated config example
 
-Current design baseline includes:
-
-- local-first SQLite storage
-- support for one or more MBOX files
-- multi-account archive separation
-- config-driven export profiles
-- NotebookLM-oriented Markdown source packs
-- JSONL export planning for RAG workflows
-- CSV export planning for spreadsheet workflows
-- category-directory export conventions
-- attachment tracking model
-- ingest-run checkpoint model
-- deterministic classification rules
-- optional local LLM classification
-- security scanning and scrubbing roadmap
-- CLI shape and config loading utilities
+tests/
+  test_accounts.py
+  test_classify.py
+  test_config.py
+  test_db.py
+  test_export.py
+  test_first_run.py
+  test_ingest.py
+  test_limits.py
+  test_manifest.py
+  test_migration.py
+  test_naming.py
+  test_normalize.py
+  test_scrub_export.py
+  test_taxonomy.py
+  test_thread_classify.py
+```
 
 ## Quick start
 
@@ -245,7 +278,23 @@ mboxer classify \
   --account primary-gmail
 ```
 
-**6. Dry-run export to verify output shape**
+**6. Review categories**
+
+```bash
+mboxer review-categories \
+  --config config/mboxer.yaml \
+  --account primary-gmail
+```
+
+**7. Run a security scan**
+
+```bash
+mboxer security-scan \
+  --config config/mboxer.yaml \
+  --account primary-gmail
+```
+
+**8. Dry-run export to verify output shape**
 
 ```bash
 mboxer export notebooklm \
@@ -255,7 +304,7 @@ mboxer export notebooklm \
   --dry-run
 ```
 
-**7. Real export when ready**
+**9. Real export when ready**
 
 ```bash
 mboxer export notebooklm \
@@ -296,7 +345,7 @@ Example:
 mboxer ingest data/mboxes/archive.mbox \
   --config config/mboxer.yaml \
   --source-name "Primary Gmail Archive" \
-  --account-label "primary-account" \
+  --account primary-gmail \
   --extract-attachments \
   --resume
 ```
@@ -307,42 +356,42 @@ mboxer ingest data/mboxes/archive.mbox \
 mboxer ingest data/mboxes/archive.mbox \
   --config config/mboxer.yaml \
   --source-name "Primary Gmail Archive" \
-  --account-label "primary-account" \
+  --account primary-gmail \
   --extract-attachments \
   --resume
 
 mboxer classify \
   --config config/mboxer.yaml \
-  --model llama3.1:8b \
+  --account primary-gmail \
   --level thread
 
 mboxer review-categories \
-  --config config/mboxer.yaml
+  --config config/mboxer.yaml \
+  --account primary-gmail
 
 mboxer security-scan \
-  --config config/mboxer.yaml
+  --config config/mboxer.yaml \
+  --account primary-gmail
 
 mboxer export notebooklm \
   --config config/mboxer.yaml \
+  --account primary-gmail \
   --profile ultra_safe \
   --out exports/notebooklm
 
 mboxer export jsonl \
   --config config/mboxer.yaml \
+  --account primary-gmail \
   --out exports/rag/messages.jsonl
-
-mboxer export csv \
-  --config config/mboxer.yaml \
-  --out exports/csv/messages.csv
 ```
 
 ## Multi-account support
 
-`mboxer` should support multiple separate Gmail accounts and archives.
+`mboxer` supports multiple separate Gmail accounts and archives in the same local project.
 
-Each ingested source should be trackable by account, source name, import run, and original MBOX identity.
+Each ingested source is tracked by account, source name, import run, and original MBOX file.
 
-Example account labels:
+Example account keys:
 
 ```text
 primary-account
@@ -352,15 +401,21 @@ organization-archive
 project-archive
 ```
 
-The goal is to allow multiple archives to live in the same local project without losing separation between accounts or import sources.
+To export multiple accounts into a single NotebookLM run:
+
+```bash
+mboxer export notebooklm \
+  --config config/mboxer.yaml \
+  --accounts primary-account,work-account \
+  --profile ultra_safe \
+  --out exports/notebooklm
+```
 
 ## NotebookLM source-pack strategy
 
-NotebookLM exports should be Markdown-first and organized by category directories.
+NotebookLM exports are Markdown-first and organized by category directories.
 
-Filenames should remain meaningful even if the folder hierarchy is flattened during upload.
-
-A good exported source file should be understandable on its own:
+Filenames remain meaningful even if the folder hierarchy is flattened during upload.
 
 ```text
 category-topic-year-sequence.md
@@ -379,27 +434,87 @@ support-customer-requests-2025-001.md
 
 ## Export profiles
 
-NotebookLM export limits live in `config/mboxer.example.yaml`.
+NotebookLM limit profiles are defined in `config/mboxer.example.yaml`.
 
-Planned profiles:
-
-- `standard`
-- `plus`
-- `pro`
-- `ultra`
-- `ultra_safe`
+| Profile | Max sources | Reserved | Target sources | Target words/source |
+|---|---|---|---|---|
+| `standard` | 50 | 10 | 40 | 300,000 |
+| `plus` | 100 | 20 | 80 | 300,000 |
+| `pro` | 300 | 50 | 250 | 300,000 |
+| `ultra` | 600 | 75 | 525 | 300,000 |
+| `ultra_safe` | 600 | 100 | 450 | 225,000 |
 
 Use `ultra_safe` as the default for large NotebookLM-oriented workflows where you want to preserve headroom for manual sources, attachments, PDFs, and later additions.
+
+Limit overrides can be passed directly on the CLI:
+
+```bash
+mboxer export notebooklm \
+  --profile ultra_safe \
+  --max-sources 400 \
+  --target-words 200000
+```
+
+## Classification strategy
+
+Classification runs in two passes.
+
+**Rule-based** (deterministic, no network required):
+
+Rules match on sender domain, sender address fragment, and subject keywords.
+Each rule assigns a `category_path`, `sensitivity`, `notebooklm_priority`, and `export_profile`.
+
+At thread level, a matching rule is applied to the whole thread and then inherited down to all messages in the thread.
+
+Rules support two assignment modes:
+
+- `assign` — confident match, confidence 1.0
+- `assign_hint` — soft match, confidence 0.75
+
+**LLM-based** (optional, local-first):
+
+Config accepts an Ollama endpoint and model name.
+LLM classification is wired in the config shape and CLI but is not yet fully connected to the pipeline.
+
+Classification can be scoped by account and run at `message` or `thread` level:
+
+```bash
+mboxer classify --level thread --account primary-gmail
+```
+
+## Category taxonomy
+
+Categories are slash-delimited paths that become directory hierarchies in exports.
+
+```text
+medical
+medical/hospital-billing
+medical/pharmacy
+legal
+legal/law-firm-correspondence
+finance
+household/utilities
+postal/usps-informed-delivery
+noise/marketing
+noise/spam
+```
+
+Locked categories are defined in config and cannot be deleted.
+
+The classifier can propose new categories. Proposals appear in `review-categories` and require explicit approval before being used in exports:
+
+```bash
+mboxer approve-category <proposal_id>
+mboxer reject-category <proposal_id>
+```
 
 ## Security stance
 
 `mboxer` assumes mail archives contain sensitive material.
 
-Raw exports should be local-only.
+Raw exports are local-only by default.
 
-Cloud-oriented exports should use reviewed, scrubbed, or metadata-only profiles.
-
-Planned security pipeline:
+The security pipeline:
 
 ```text
 ingest
@@ -411,36 +526,41 @@ ingest
   → export
 ```
 
-Security-sensitive workflows should prefer:
+The config controls which redaction passes are applied before export:
 
-- local SQLite processing
-- local Markdown review before upload
-- explicit export profiles
-- scrubbed cloud exports
-- metadata-only exports when appropriate
-- attachment review before inclusion
-- local LLMs where possible
+```yaml
+security:
+  redact_phone_numbers: true
+  redact_ssn_like_numbers: true
+  redact_credit_card_like_numbers: true
+  redact_email_addresses: false
+  redact_physical_addresses: false
+  scan_attachments: true
+  quarantine_unsafe_attachments: true
+```
 
-## Classification strategy
+Cloud-oriented exports should use reviewed, scrubbed, or metadata-only profiles.
 
-Classification should support deterministic rules first, with optional local LLM assistance later.
+## Development
 
-The system should be able to organize messages by:
+```bash
+pip install -e ".[dev]"
 
-- account
-- source archive
-- sender
-- recipient
-- subject
-- date range
-- thread
-- category
-- project
-- topic
-- sensitivity level
-- security flags
+pytest
+```
 
-LLM-based classification should be optional, configurable, and local-first by default.
+Linting and type checking:
+
+```bash
+ruff check src/
+mypy src/
+```
+
+Optional PDF support:
+
+```bash
+pip install -e ".[pdf]"
+```
 
 ## Design goals
 
@@ -469,23 +589,6 @@ LLM-based classification should be optional, configurable, and local-first by de
 - a tool that uploads raw email archives by default
 - a black-box AI classifier
 - a cloud-first archive processor
-
-## Development direction
-
-Near-term implementation priorities:
-
-1. Complete MBOX ingest into SQLite.
-2. Preserve account/source separation.
-3. Add resumable ingest checkpoints.
-4. Normalize message metadata and body text.
-5. Add NotebookLM Markdown export.
-6. Add JSONL export.
-7. Add CSV export.
-8. Add deterministic classification rules.
-9. Add category review workflows.
-10. Add security scan and scrub hooks.
-11. Add optional local LLM classification.
-12. Add thread-level classification and export modes.
 
 ## License
 
