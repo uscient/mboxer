@@ -1,0 +1,21 @@
+name: Schema
+
+on:
+  push:
+    paths:
+      - "src/mboxer/db/schema.sql"
+      - "src/mboxer/db/migrations/**"
+      - "schema_ingest_tracking.sql"
+
+jobs:
+  validate:
+    name: Validate SQLite schema
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply schema to a fresh database
+        run: |
+          sqlite3 /tmp/test.sqlite < src/mboxer/db/schema.sql
+          echo "Schema applied cleanly"
