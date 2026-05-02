@@ -31,7 +31,7 @@ def apply_migrations(db_path: Path) -> list[str]:
 
     try:
         tables_before = _existing_tables(conn)
-        is_fresh = len(tables_before) == 0
+        len(tables_before) == 0
         is_legacy = "messages" in tables_before and "schema_migrations" not in tables_before
 
         conn.execute(
