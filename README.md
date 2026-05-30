@@ -117,6 +117,12 @@ JSONL is intended for RAG pipelines, embeddings, local LLM tools, and structured
 Each line represents one message with clean body text, metadata, and classification context.
 Account key is injected into the output path automatically to keep multi-account exports separated.
 
+### External API/import handoff
+
+No external API delivery is implemented today. Future configurable API exports should use explicit safe projections and configured intake routes, not direct SQLite sharing or hard-coded downstream services.
+
+NotebookLM Markdown and JSONL remain standalone outputs. Optional raw custody handoff, if ever added, should be explicit opt-in, default off, and separate from safer export paths.
+
 ### CSV exports
 
 CSV export is planned for spreadsheet review, filtering, auditing, and manual cleanup.

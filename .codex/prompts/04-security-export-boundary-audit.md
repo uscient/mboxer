@@ -2,7 +2,7 @@
 
 You are working in the `mboxer` repo.
 
-Goal: audit and, if safe, tighten tests around scan/scrub/export boundary behavior before mboxer becomes a future producer for downstream custody systems.
+Goal: audit and, if safe, tighten tests around scan/scrub/export boundary behavior before mboxer becomes a future safe-projection producer for configured external custody systems.
 
 Constraints:
 

@@ -2,12 +2,12 @@
 
 You are working in the `mboxer` repo.
 
-Goal: harden existing export manifest and lineage behavior so future systems can understand what was produced, from what inputs, under what config/policy, without adding uScientDB integration yet.
+Goal: harden existing export manifest and lineage behavior so future external systems can understand what was produced, from what inputs, under what config/policy, without adding external custody/API integration yet.
 
 Constraints:
 
 - Keep changes PR-sized.
-- Do not add uScientDB dependencies.
+- Do not add external service dependencies.
 - Do not invent a network client.
 - Preserve current CLI behavior unless a test proves a bug.
 - Do not mutate existing historical data unexpectedly.
@@ -27,7 +27,7 @@ Inspect first:
 Desired direction:
 
 - Manifest should clearly record export type, account, source DB/config context where available, export profile, scrub/security posture, category path, generated files, item counts, limits/splitting behavior, and timestamps.
-- Keep enough information for a future producer adapter to emit an append-only event about the export.
+- Keep enough information for a future external API/import adapter to emit an append-only handoff record about the export.
 - Add or strengthen tests.
 
 Before final report, run targeted tests and then broader tests if feasible.

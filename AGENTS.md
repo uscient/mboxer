@@ -27,8 +27,8 @@ The main command is `mboxer`, wired through `mboxer.cli:main`. The module entryp
 - Never include raw private email body text, secrets, account identifiers, attachment contents, or sensitive findings in final reports. Use counts, paths, and sanitized examples.
 - Preserve local-first behavior. Do not add cloud, SaaS, telemetry, background sync, external network calls, or hosted service assumptions without explicit approval.
 - Do not add production dependencies without calling them out first and explaining why the standard library or current dependencies are insufficient.
-- Do not broaden `mboxer` into uScientDB, a general knowledge manager, an agent platform, or a UI. `mboxer` is the focused email archive processor and future evidence producer.
-- For future uScientDB readiness work, add neutral seams only. Do not invent the final uScientDB API, wire network delivery, or hard-code uScientDB-specific behavior unless explicitly requested.
+- Do not broaden `mboxer` into a general knowledge manager, an agent platform, or a UI. `mboxer` is the focused email archive processor and future evidence producer.
+- For future external intake/API export readiness work, add neutral seams only. Do not invent a final external API, wire network delivery, or hard-code a downstream service unless explicitly requested.
 - Preserve deterministic behavior wherever possible. LLM/Ollama classification is future-facing unless the task explicitly says to implement it.
 - Prefer additive changes and tests over rewrites.
 
@@ -120,15 +120,16 @@ Primary areas to inspect before changing behavior:
 - Export output must remain stable enough for repeatable review workflows.
 - Do not let export convenience override custody, provenance, or scrub/profile semantics.
 
-### Future uScientDB readiness
+### Future external intake readiness
 
-`mboxer` may later become a producer for uScientDB. Until explicitly instructed otherwise:
+`mboxer` may later produce safe projections for configured external evidence stores or intake endpoints. Until explicitly instructed otherwise:
 
-- Keep uScientDB integration optional and absent.
-- Add only neutral event/manifest/lineage seams that are useful locally even without uScientDB.
-- Treat future producer events as append-oriented descriptions of operations, not mutable source truth.
-- Avoid raw body content in event-like payloads by default.
-- Make future adapter boundaries easy to test without a running server.
+- Keep external custody/API integration optional and absent.
+- Add only neutral event/manifest/lineage seams that are useful locally even without an external system.
+- Treat future handoff records as append-oriented descriptions of operations, not mutable source truth.
+- Avoid raw body content, attachment payloads, local paths, account emails, and security excerpts in event-like payloads by default.
+- Keep future API/import adapter boundaries easy to test without a running external service.
+- SQLite remains `mboxer`'s local operational store and must not be shared with external systems; use explicit safe projections or configured exports instead.
 
 ## Development workflow
 

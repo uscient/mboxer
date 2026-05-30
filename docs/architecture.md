@@ -30,6 +30,9 @@ MBOX files
 7. Exported files should be useful even when folder hierarchy is flattened.
 8. Security/scrubbing should be a pipeline stage, not an afterthought.
 9. NotebookLM limits must be config-driven.
+10. SQLite is local operational state and must not be shared with external systems.
+11. Data should leave through explicit exports or safe projections.
+12. Future API/import handoff destinations should be configured, not hard-coded.
 
 ## Major components
 
@@ -96,3 +99,11 @@ It stores:
 - export manifests
 
 This lets the user ingest once, reclassify many times, tune export profiles, and regenerate NotebookLM packs without rereading huge MBOX files.
+
+## External handoff boundaries
+
+NotebookLM Markdown and JSONL are standalone outputs. File-based delivery exists today; external API/import delivery is only a future direction.
+
+Future external API/import destinations should consume safe projections through explicit configured intake routes. Do not share the SQLite database directly with an external system, and do not hard-code a downstream service.
+
+No raw email body text, attachment payloads, local paths, account emails, or security excerpts should be emitted by default. Optional raw custody handoff, if ever added, should be explicit opt-in, default off, and separate from safe projection/export paths.

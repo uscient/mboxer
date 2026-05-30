@@ -1,9 +1,9 @@
-Harden mboxer export manifest and lineage behavior without adding uScientDB integration.
+Harden mboxer export manifest and lineage behavior without adding external custody/API integration.
 
 Requirements:
 
 - Keep changes PR-sized.
-- Do not add network calls or uScientDB dependencies.
+- Do not add network calls or external service dependencies.
 - Prefer additive manifest fields and tests.
 - Do not include raw sensitive body content in manifests.
 - Inspect `src/mboxer/exporters/manifest.py`, NotebookLM exporter, JSONL exporter, export schema usage, config export profile behavior, and export/manifest tests.

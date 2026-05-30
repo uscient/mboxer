@@ -2,17 +2,17 @@
 
 You are working in the `mboxer` repo.
 
-Goal: add a small internal abstraction seam for future producer events, without connecting to uScientDB and without changing core behavior unnecessarily.
+Goal: add a small internal abstraction seam for future producer events, without connecting to an external custody system and without changing core behavior unnecessarily.
 
 Important framing:
 
-`mboxer` is the producer/tool. uScientDB may eventually receive append-only evidence, but it does not exist here yet. This task should make future integration easier while keeping `mboxer` independent.
+`mboxer` is the local email/MBOX specialist. A future external evidence store may receive safe projections through configured intake routes, but no external system exists in this repo. This task should make future integration easier while keeping `mboxer` independent.
 
 Constraints:
 
 - Do not add network calls.
-- Do not add uScientDB package names unless purely conceptual in docs/comments and clearly marked future-facing.
-- Do not invent a final event schema that pretends to be uScientDB’s API.
+- Do not add external service package names.
+- Do not invent a final event schema that pretends to be an external API.
 - Keep it local, testable, and boring.
 - Prefer a neutral module name like `events`, `activity`, `audit`, or `producer`.
 - Events should be append-oriented descriptions of local operations, not mutable state.
@@ -30,7 +30,7 @@ Tasks:
 2. Propose the smallest neutral internal event abstraction.
 3. Implement only if the seam is clearly useful and does not require broad rewrites.
 4. Add tests.
-5. Document how a future adapter could consume these events.
+5. Document how a future external API/import adapter could consume these events.
 
 Preferred shape:
 
@@ -38,7 +38,7 @@ Preferred shape:
 - Stable event names for operations like ingest completed, classification completed, security scan completed, export completed, category reviewed.
 - JSON-serializable payloads.
 - No external delivery.
-- Clear boundaries around what is evidence vs derived/exported content.
+- Clear boundaries around local evidence, safe projections, and exported content.
 
 Output:
 
@@ -46,6 +46,6 @@ Output:
 - What seam you added and why.
 - Files changed.
 - Tests run.
-- Why this does not couple `mboxer` to uScientDB.
+- Why this does not couple `mboxer` to any external system.
 - Later abstraction/refactor opportunities discovered, without implementing them.
 - Instruction-surface changes.

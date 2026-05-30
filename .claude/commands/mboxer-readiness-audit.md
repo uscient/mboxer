@@ -1,4 +1,4 @@
-Perform a no-code readiness audit for `mboxer` as a future uScientDB producer.
+Perform a no-code readiness audit for `mboxer` as a future safe-projection producer for configured external destinations.
 
 Requirements:
 

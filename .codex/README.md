@@ -8,4 +8,4 @@ Important:
 
 - Do not assume edits to this directory affect an already-running Codex session.
 - After changing `.codex/`, `AGENTS.md`, or other instruction-surface files, start a fresh Codex session before relying on the new instructions.
-- These prompts intentionally avoid inventing a uScientDB API. They prepare mboxer as a clean future producer without coupling it to a server that is not ready yet.
+- These prompts intentionally avoid inventing a downstream API. They prepare mboxer for possible configured external intake/export paths without coupling it to any service that does not exist here.
