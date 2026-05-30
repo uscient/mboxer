@@ -416,6 +416,8 @@ def test_notebooklm_export_table_records_lineage_metadata(tmp_path, db_with_data
     assert str(tmp_path) not in metadata_json
     assert str(db_with_data) not in metadata_json
     assert "user@example.com" not in metadata_json
+    assert "Balance due: $350.00." not in metadata_json
+    assert "Here are your mail pieces for today." not in metadata_json
 
     metadata = json.loads(metadata_json)
     assert export_profile == "scrubbed"
@@ -511,6 +513,64 @@ def test_notebooklm_manifest_omits_attachment_contents(tmp_path):
     assert ATTACHMENT_PAYLOAD not in manifest_text
     assert str(attachments_dir) not in manifest_text
     assert "user@example.com" not in manifest_text
+
+
+def test_jsonl_manifest_and_run_metadata_omit_attachment_contents(tmp_path):
+    db_path = tmp_path / "mboxer.sqlite"
+    mbox_path = tmp_path / "attachment.mbox"
+    attachments_dir = tmp_path / "attachments"
+    out = tmp_path / "test-gmail" / "messages.jsonl"
+    account_email = "owner-account@example.net"
+    config = {
+        **INGEST_CONFIG,
+        "paths": {"attachments_dir": str(attachments_dir)},
+    }
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    create_account(conn, "test-gmail", email_address=account_email)
+    conn.close()
+    _make_mbox(mbox_path, [ATTACHMENT_MSG])
+    ingest_mbox(
+        mbox_path,
+        config=config,
+        db_path=db_path,
+        account_key="test-gmail",
+        extract_attachments_flag=True,
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        account_id = conn.execute(
+            "SELECT id FROM accounts WHERE account_key = 'test-gmail'"
+        ).fetchone()[0]
+        result = export_jsonl(
+            conn,
+            config,
+            out,
+            account_id=account_id,
+            account_key="test-gmail",
+            account_email_address=account_email,
+            db_path=str(db_path),
+            config_path=str(tmp_path / "private-config.yaml"),
+        )
+        metadata_json = conn.execute(
+            "SELECT metadata_json FROM exports WHERE id = ?",
+            (result["export_id"],),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    manifest_text = Path(result["manifest_path"]).read_text()
+    jsonl_text = out.read_text()
+    records = [json.loads(line) for line in jsonl_text.splitlines()]
+
+    assert records[0]["attachment_count"] == 1
+    assert ATTACHMENT_PAYLOAD not in jsonl_text
+    for safe_text in (manifest_text, metadata_json):
+        assert ATTACHMENT_PAYLOAD not in safe_text
+        assert str(attachments_dir) not in safe_text
+        assert account_email not in safe_text
+        assert str(db_path) not in safe_text
 
 
 def test_notebooklm_dry_run_no_manifest_written(tmp_path, db_with_data):
@@ -680,6 +740,8 @@ def test_jsonl_export_table_records_lineage_metadata(tmp_path, db_with_data):
     assert str(tmp_path) not in export_row[7]
     assert str(db_with_data) not in export_row[7]
     assert "user@example.com" not in export_row[7]
+    assert "Balance due: $350.00." not in export_row[7]
+    assert "Here are your mail pieces for today." not in export_row[7]
 
     metadata = json.loads(export_row[7])
     assert export_row[:7] == (

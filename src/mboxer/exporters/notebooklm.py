@@ -10,7 +10,13 @@ from typing import Any
 
 from ..limits import NotebookLMLimits
 from ..naming import category_to_directory, normalize_category_path, source_pack_filename
-from ..security.policy import is_exportable, metadata_only, needs_scrub, resolve_export_profile
+from ..security.policy import (
+    default_export_profile,
+    is_exportable,
+    metadata_only,
+    needs_scrub,
+    resolve_export_profile,
+)
 from ..security.scrub import scrub_text
 
 
@@ -156,13 +162,12 @@ def _prepare_records_for_export(
     their per-record export_profile.
     """
     security = config.get("security") or {}
-    config_default = security.get("default_export_profile", "raw")
+    config_default = default_export_profile(security.get("default_export_profile"))
     scrub_enabled = security.get("scrub_enabled", True)
     result: list[dict[str, Any]] = []
     for rec in records:
-        effective = override_profile or resolve_export_profile(
-            rec.get("export_profile"), config_default
-        )
+        requested_profile = override_profile or rec.get("export_profile")
+        effective = resolve_export_profile(requested_profile, config_default)
         if not is_exportable(effective):
             continue
         rec = dict(rec)
@@ -324,8 +329,8 @@ def export_notebooklm(
     groups = _group_by_category_and_band(records)
     effective_budget = limits.effective_source_budget
     security = config.get("security") or {}
-    security_profile = security.get("default_export_profile")
-    effective_profile = export_profile or security_profile or "raw"
+    security_profile = default_export_profile(security.get("default_export_profile"))
+    effective_profile = resolve_export_profile(export_profile, security_profile)
     notebooklm_config = (config.get("exports") or {}).get("notebooklm") or {}
 
     stats: dict[str, Any] = {
@@ -473,7 +478,9 @@ def _export_metadata_json(
         output_path=output_path,
         export_profile=export_profile,
         effective_profile=effective_profile,
-        security_profile=(config.get("security") or {}).get("default_export_profile"),
+        security_profile=default_export_profile(
+            (config.get("security") or {}).get("default_export_profile")
+        ),
         scrub_enabled=scrub_enabled,
         redaction_policy=redaction_policy,
         limit_profile=limits.profile_name,

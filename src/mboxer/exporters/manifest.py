@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
+from ..security.policy import default_export_profile
 
 MANIFEST_SCHEMA_VERSION = "1"
 TOOL_NAME = "mboxer"
@@ -133,6 +134,7 @@ def build_safe_export_run_metadata(
     metadata is the safe lineage view and must not carry absolute local paths or
     raw account email values.
     """
+    safe_security_profile = default_export_profile(security_profile)
     output_ref = safe_lineage_path(output_path)
     output_file = Path(output_path).name if output_path else ""
     metadata: dict[str, Any] = {
@@ -152,7 +154,7 @@ def build_safe_export_run_metadata(
         "output_file": output_file,
         "export_profile_override": export_profile or "",
         "effective_default_export_profile": effective_profile,
-        "security_profile": security_profile or "",
+        "security_profile": safe_security_profile,
         "scrub_enabled": scrub_enabled,
         "redaction_policy": redaction_policy,
         "limit_profile": limit_profile or "",
@@ -191,7 +193,8 @@ def _base_lineage_fields(
     warnings: list[str] | None,
     created_at: str,
 ) -> dict[str, Any]:
-    effective_default = export_profile or security_profile or "raw"
+    safe_security_profile = default_export_profile(security_profile)
+    effective_default = export_profile or safe_security_profile
     return {
         "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
         "tool_name": TOOL_NAME,
@@ -207,7 +210,7 @@ def _base_lineage_fields(
         "source_config_path": _safe_manifest_path(source_config_path),
         "export_profile": export_profile or "",
         "export_profile_override": export_profile or "",
-        "security_profile": security_profile or "",
+        "security_profile": safe_security_profile,
         "effective_default_export_profile": effective_default,
         "scrub_enabled": "" if scrub_enabled is None else bool(scrub_enabled),
         "redaction_policy_json": _compact_json(redaction_policy),

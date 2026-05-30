@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..security.policy import is_exportable, metadata_only, needs_scrub, resolve_export_profile
+from ..security.policy import (
+    default_export_profile,
+    is_exportable,
+    metadata_only,
+    needs_scrub,
+    resolve_export_profile,
+)
 from ..security.scrub import scrub_text
 
 
@@ -26,10 +32,10 @@ def export_jsonl(
     jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
     include_classification = jsonl_config.get("include_classification", True)
     security = config.get("security") or {}
-    config_default = security.get("default_export_profile", "raw")
+    config_default = default_export_profile(security.get("default_export_profile"))
     scrub_enabled = security.get("scrub_enabled", True)
-    security_profile = security.get("default_export_profile")
-    effective_profile = export_profile or config_default
+    security_profile = config_default
+    effective_profile = resolve_export_profile(export_profile, config_default)
 
     if account_id is not None:
         rows = conn.execute(
@@ -106,7 +112,8 @@ def export_jsonl(
 
             # Resolve export profile for this record
             per_record_profile = (classifications.get(record["id"]) or {}).get("export_profile")
-            effective = export_profile or resolve_export_profile(per_record_profile, config_default)
+            requested_profile = export_profile or per_record_profile
+            effective = resolve_export_profile(requested_profile, config_default)
             if not is_exportable(effective):
                 excluded_message_count += 1
                 continue
@@ -280,7 +287,9 @@ def _jsonl_export_metadata_json(
         output_path=out_path,
         export_profile=export_profile,
         effective_profile=effective_profile,
-        security_profile=(config.get("security") or {}).get("default_export_profile"),
+        security_profile=default_export_profile(
+            (config.get("security") or {}).get("default_export_profile")
+        ),
         scrub_enabled=scrub_enabled,
         redaction_policy=redaction_policy,
         export_format=jsonl_config,

@@ -21,6 +21,8 @@ from mboxer.exporters.jsonl import export_jsonl
 from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import resolve_notebooklm_limits
+from mboxer.security.policy import needs_scrub, resolve_export_profile
+from mboxer.security.scan import run_security_scan
 
 # ── Shared test data ──────────────────────────────────────────────────────────
 
@@ -113,6 +115,27 @@ EMAIL_REDACT_CONFIG: dict[str, Any] = {
     },
 }
 
+MISSING_DEFAULT_SCRUB_CONFIG: dict[str, Any] = {
+    **BASE_CONFIG,
+    "security": {
+        "scrub_enabled": True,
+        "redact_phone_numbers": True,
+        "redact_ssn_like_numbers": True,
+        "redact_credit_card_like_numbers": True,
+    },
+}
+
+INVALID_DEFAULT_SCRUB_CONFIG: dict[str, Any] = {
+    **BASE_CONFIG,
+    "security": {
+        "default_export_profile": "not-a-profile",
+        "scrub_enabled": True,
+        "redact_phone_numbers": True,
+        "redact_ssn_like_numbers": True,
+        "redact_credit_card_like_numbers": True,
+    },
+}
+
 
 def _make_mbox(path: Path, messages: list[str]) -> None:
     mbox = mailbox.mbox(str(path), create=True)
@@ -187,6 +210,22 @@ def _read_jsonl_bodies(out_path: Path) -> list[str | None]:
     return [json.loads(line).get("body_text") for line in out_path.read_text().splitlines()]
 
 
+# ── Export profile policy semantics ──────────────────────────────────────────
+
+def test_reviewed_profile_is_scrubbed_profile_label_not_review_proof():
+    assert resolve_export_profile(None, "reviewed") == "reviewed"
+    assert needs_scrub("reviewed") is True
+
+
+def test_invalid_default_profile_uses_safe_scrubbed_fallback():
+    assert resolve_export_profile(None, "not-a-profile") == "scrubbed"
+    assert resolve_export_profile("not-a-profile", "metadata-only") == "metadata-only"
+
+
+def test_missing_default_profile_uses_safe_scrubbed_fallback():
+    assert resolve_export_profile(None, None) == "scrubbed"
+
+
 # ── NotebookLM: raw ───────────────────────────────────────────────────────────
 
 def test_nlm_raw_preserves_body(tmp_path, db_pii):
@@ -232,6 +271,26 @@ def test_nlm_scrubbed_preserves_clean_content(tmp_path, db_pii):
     _do_nlm_export(db_pii, tmp_path / "out", SCRUB_CONFIG)
     bodies = _read_md_bodies(tmp_path / "out")
     assert CLEAN_BODY in bodies
+
+
+def test_nlm_missing_default_profile_does_not_fall_back_to_raw(tmp_path, db_pii):
+    stats = _do_nlm_export(db_pii, tmp_path / "out", MISSING_DEFAULT_SCRUB_CONFIG)
+    bodies = _read_md_bodies(tmp_path / "out")
+    manifest = json.loads(Path(stats["manifest_json"]).read_text())
+
+    assert "555-867-5309" not in bodies
+    assert "[PHONE REDACTED]" in bodies
+    assert all(row["effective_default_export_profile"] == "scrubbed" for row in manifest)
+
+
+def test_nlm_invalid_default_profile_does_not_fall_back_to_raw(tmp_path, db_pii):
+    stats = _do_nlm_export(db_pii, tmp_path / "out", INVALID_DEFAULT_SCRUB_CONFIG)
+    bodies = _read_md_bodies(tmp_path / "out")
+    manifest = json.loads(Path(stats["manifest_json"]).read_text())
+
+    assert "555-867-5309" not in bodies
+    assert "[PHONE REDACTED]" in bodies
+    assert all(row["effective_default_export_profile"] == "scrubbed" for row in manifest)
 
 
 # ── NotebookLM: reviewed behaves like scrubbed ────────────────────────────────
@@ -426,6 +485,30 @@ def test_jsonl_scrubbed_redacts_credit_card(tmp_path, db_pii):
     assert "[CARD REDACTED]" in texts
 
 
+def test_jsonl_missing_default_profile_does_not_fall_back_to_raw(tmp_path, db_pii):
+    out = tmp_path / "test-account" / "messages.jsonl"
+    result = _do_jsonl_export(db_pii, out, MISSING_DEFAULT_SCRUB_CONFIG)
+    bodies = _read_jsonl_bodies(out)
+    texts = " ".join(b for b in bodies if b)
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+
+    assert "555-867-5309" not in texts
+    assert "[PHONE REDACTED]" in texts
+    assert manifest[0]["effective_default_export_profile"] == "scrubbed"
+
+
+def test_jsonl_invalid_default_profile_does_not_fall_back_to_raw(tmp_path, db_pii):
+    out = tmp_path / "test-account" / "messages.jsonl"
+    result = _do_jsonl_export(db_pii, out, INVALID_DEFAULT_SCRUB_CONFIG)
+    bodies = _read_jsonl_bodies(out)
+    texts = " ".join(b for b in bodies if b)
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+
+    assert "555-867-5309" not in texts
+    assert "[PHONE REDACTED]" in texts
+    assert manifest[0]["effective_default_export_profile"] == "scrubbed"
+
+
 # ── JSONL: reviewed behaves like scrubbed ────────────────────────────────────
 
 def test_jsonl_reviewed_redacts_like_scrubbed(tmp_path, db_pii):
@@ -568,3 +651,58 @@ def test_scrub_is_account_scoped(tmp_path):
     assert "[PHONE REDACTED]" in bodies_a
     assert CLEAN_BODY in bodies_b           # raw, preserved
     assert "[PHONE REDACTED]" not in bodies_b
+
+
+# ── Security scan finding boundary ───────────────────────────────────────────
+
+def test_security_scan_is_idempotent_for_existing_message_findings(db_pii):
+    scan_config = {"security": {"scan_enabled": True}}
+    account_id = _get_account_id(db_pii)
+    conn = sqlite3.connect(db_pii)
+    try:
+        first = run_security_scan(conn, scan_config, account_id=account_id)
+        first_count = conn.execute("SELECT COUNT(*) FROM security_findings").fetchone()[0]
+        second = run_security_scan(conn, scan_config, account_id=account_id)
+        second_count = conn.execute("SELECT COUNT(*) FROM security_findings").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first["findings"] > 0
+    assert second["findings"] == 0
+    assert second_count == first_count
+
+
+def test_security_scan_findings_stay_out_of_safe_export_metadata(tmp_path, db_pii):
+    scan_config = {"security": {"scan_enabled": True}}
+    account_id = _get_account_id(db_pii)
+    conn = sqlite3.connect(db_pii)
+    try:
+        run_security_scan(conn, scan_config, account_id=account_id)
+        local_excerpt = conn.execute(
+            "SELECT excerpt FROM security_findings WHERE finding_type = 'phone_number'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert local_excerpt == "555-867-5309"
+
+    nlm_stats = _do_nlm_export(db_pii, tmp_path / "nlm", SCRUB_CONFIG)
+    jsonl_out = tmp_path / "test-account" / "messages.jsonl"
+    jsonl_result = _do_jsonl_export(db_pii, jsonl_out, SCRUB_CONFIG)
+
+    conn = sqlite3.connect(db_pii)
+    try:
+        metadata_text = "\n".join(
+            row[0] or "" for row in conn.execute(
+                "SELECT metadata_json FROM exports ORDER BY id"
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+
+    safe_text = "\n".join([
+        Path(nlm_stats["manifest_json"]).read_text(),
+        Path(jsonl_result["manifest_path"]).read_text(),
+        metadata_text,
+    ])
+    assert "555-867-5309" not in safe_text

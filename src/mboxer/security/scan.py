@@ -27,6 +27,53 @@ def scan_text(text: str) -> list[dict[str, Any]]:
     return findings
 
 
+def _insert_finding_once(
+    conn: sqlite3.Connection,
+    *,
+    account_id: int,
+    message_db_id: int,
+    finding: dict[str, Any],
+) -> bool:
+    existing = conn.execute(
+        """
+        SELECT 1
+        FROM security_findings
+        WHERE account_id = ?
+          AND target_type = 'message'
+          AND message_db_id = ?
+          AND attachment_id IS NULL
+          AND finding_type = ?
+          AND detector = ?
+          AND excerpt = ?
+        LIMIT 1
+        """,
+        (
+            account_id,
+            message_db_id,
+            finding["finding_type"],
+            finding["detector"],
+            finding["excerpt"],
+        ),
+    ).fetchone()
+    if existing:
+        return False
+
+    conn.execute(
+        "INSERT INTO security_findings "
+        "(account_id, target_type, message_db_id, finding_type, severity, detector, excerpt) "
+        "VALUES (?, 'message', ?, ?, ?, ?, ?)",
+        (
+            account_id,
+            message_db_id,
+            finding["finding_type"],
+            finding["severity"],
+            finding["detector"],
+            finding["excerpt"],
+        ),
+    )
+    return True
+
+
 def run_security_scan(
     conn: sqlite3.Connection,
     config: dict[str, Any],
@@ -51,14 +98,13 @@ def run_security_scan(
     for msg_id, msg_account_id, body_text in rows:
         findings = scan_text(body_text)
         for finding in findings:
-            conn.execute(
-                "INSERT INTO security_findings "
-                "(account_id, target_type, message_db_id, finding_type, severity, detector, excerpt) "
-                "VALUES (?, 'message', ?, ?, ?, ?, ?)",
-                (msg_account_id, msg_id, finding["finding_type"],
-                 finding["severity"], finding["detector"], finding["excerpt"]),
-            )
-        total_findings += len(findings)
+            if _insert_finding_once(
+                conn,
+                account_id=msg_account_id,
+                message_db_id=msg_id,
+                finding=finding,
+            ):
+                total_findings += 1
         scanned += 1
 
     conn.commit()
