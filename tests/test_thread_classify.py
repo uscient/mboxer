@@ -6,8 +6,6 @@ import mailbox
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from mboxer.accounts import create_account
 from mboxer.classify import _build_thread_input, _select_excerpts, run_rule_classification
 from mboxer.db import init_db
@@ -478,7 +476,6 @@ def test_thread_classification_no_rules_returns_early(tmp_path):
 
 def test_export_uses_inherited_thread_classification(tmp_path):
     """NotebookLM export picks up messages classified via thread inheritance."""
-    from pathlib import Path
     from mboxer.exporters.notebooklm import export_notebooklm
     from mboxer.limits import NotebookLMLimits
 

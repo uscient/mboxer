@@ -1,6 +1,4 @@
 import sqlite3
-import pytest
-from mboxer.db import init_db
 from mboxer.db.schema import apply_migrations
 
 

@@ -1,6 +1,5 @@
 """First-run workflow tests: synthetic fixture ingest, CLI account commands,
 Ollama model resolution, account-scoped paths, and thread-level classification."""
-import json
 import sqlite3
 import subprocess
 import sys

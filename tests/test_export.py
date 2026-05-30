@@ -4,7 +4,6 @@ import textwrap
 import mailbox
 from pathlib import Path
 
-import pytest
 from mboxer.accounts import create_account
 from mboxer.config import load_config
 from mboxer.db import init_db
@@ -115,7 +114,7 @@ def test_jsonl_export(tmp_path):
     finally:
         conn.close()
     assert out.exists()
-    lines = [json.loads(l) for l in out.read_text().splitlines()]
+    lines = [json.loads(line) for line in out.read_text().splitlines()]
     assert result["messages_written"] == len(lines) == 2
     assert all(line.get("account_key") == "test-gmail" for line in lines)
 
@@ -195,12 +194,12 @@ def test_accounts_do_not_mix_in_export(tmp_path):
 
     conn = sqlite3.connect(db_path)
     try:
-        stats_a = export_notebooklm(
+        export_notebooklm(
             conn, CONFIG, limits, tmp_path / "out",
             account_id=aid, account_key="dad-gmail",
             dry_run=False, db_path=str(db_path),
         )
-        stats_b = export_notebooklm(
+        export_notebooklm(
             conn, CONFIG, limits, tmp_path / "out",
             account_id=bid, account_key="personal-gmail",
             dry_run=False, db_path=str(db_path),

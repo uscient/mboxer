@@ -1,4 +1,7 @@
 import sqlite3
+
+import pytest
+
 from mboxer.db import init_db
 from mboxer.accounts import create_account
 from mboxer.taxonomy import (
@@ -6,7 +9,6 @@ from mboxer.taxonomy import (
     ensure_category,
     get_all_categories,
     approve_proposal,
-    reject_proposal,
 )
 
 
@@ -15,10 +17,6 @@ CONFIG = {
         "locked_categories": ["medical", "medical/hospital-billing", "legal", "household/utilities"]
     }
 }
-
-
-import pytest
-
 
 @pytest.fixture()
 def db(tmp_path):
