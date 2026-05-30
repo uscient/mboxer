@@ -82,6 +82,54 @@ def test_rule_classification(tmp_path):
         conn.close()
 
 
+def test_rule_classification_records_rule_source_without_creating_categories(tmp_path):
+    db_path = tmp_path / "test.sqlite"
+    mbox_path = tmp_path / "test.mbox"
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    create_account(conn, "test-gmail")
+    conn.close()
+
+    config = {
+        **CONFIG,
+        "rules": [
+            {
+                **CONFIG["rules"][0],
+                "assign": {
+                    **CONFIG["rules"][0]["assign"],
+                    "category_path": "Postal / USPS Informed Delivery",
+                },
+            }
+        ],
+    }
+
+    _make_mbox(mbox_path, [USPS_MSG])
+    ingest_mbox(mbox_path, config=config, db_path=db_path, account_key="test-gmail")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        account_id = conn.execute("SELECT id FROM accounts WHERE account_key = 'test-gmail'").fetchone()[0]
+        result = run_rule_classification(conn, config, account_id=account_id)
+
+        row = conn.execute(
+            "SELECT category_path, classifier_type, classifier_name, confidence, export_profile "
+            "FROM classifications WHERE message_db_id IS NOT NULL"
+        ).fetchone()
+        category_count = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
+
+        assert result["classified"] == 1
+        assert row == (
+            "postal/usps-informed-delivery",
+            "rule",
+            "usps-informed-delivery",
+            1.0,
+            "metadata-only",
+        )
+        assert category_count == 0
+    finally:
+        conn.close()
+
+
 def test_classification_is_account_scoped(tmp_path):
     """Classifications for account A must not bleed into account B's results."""
     db_path = tmp_path / "test.sqlite"

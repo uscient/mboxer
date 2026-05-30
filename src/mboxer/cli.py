@@ -329,7 +329,10 @@ def cmd_approve_category(args: argparse.Namespace) -> None:
     config, db_path = load_runtime(args)
     conn = open_db(db_path)
     try:
-        path = approve_proposal(conn, args.proposal_id, args.note)
+        try:
+            path = approve_proposal(conn, args.proposal_id, args.note)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         print(f"Approved proposal {args.proposal_id} -> {path}")
     finally:
         conn.close()
@@ -340,7 +343,10 @@ def cmd_reject_category(args: argparse.Namespace) -> None:
     config, db_path = load_runtime(args)
     conn = open_db(db_path)
     try:
-        reject_proposal(conn, args.proposal_id, args.note)
+        try:
+            reject_proposal(conn, args.proposal_id, args.note)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         print(f"Rejected proposal {args.proposal_id}.")
     finally:
         conn.close()

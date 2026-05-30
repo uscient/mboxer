@@ -165,14 +165,16 @@ def list_pending_proposals(
 
 def approve_proposal(conn: sqlite3.Connection, proposal_id: int, note: str = "") -> str:
     row = conn.execute(
-        "SELECT proposed_path, display_name, account_id FROM category_proposals "
+        "SELECT proposed_path, account_id FROM category_proposals "
         "WHERE id = ? AND status = 'pending'",
         (proposal_id,),
     ).fetchone()
     if not row:
         raise ValueError(f"No pending proposal with id {proposal_id}")
-    path, display_name, account_id = row
-    ensure_category(conn, path, account_id=account_id)
+    raw_path, account_id = row
+    path = normalize_category_path(raw_path)
+    category_id = ensure_category(conn, path, account_id=account_id)
+    conn.execute("UPDATE categories SET is_active = 1 WHERE id = ?", (category_id,))
     conn.execute(
         "UPDATE category_proposals SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP, "
         "reviewed_note = ? WHERE id = ?",
@@ -183,6 +185,12 @@ def approve_proposal(conn: sqlite3.Connection, proposal_id: int, note: str = "")
 
 
 def reject_proposal(conn: sqlite3.Connection, proposal_id: int, note: str = "") -> None:
+    row = conn.execute(
+        "SELECT id FROM category_proposals WHERE id = ? AND status = 'pending'",
+        (proposal_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"No pending proposal with id {proposal_id}")
     conn.execute(
         "UPDATE category_proposals SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, "
         "reviewed_note = ? WHERE id = ? AND status = 'pending'",

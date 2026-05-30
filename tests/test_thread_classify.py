@@ -326,6 +326,79 @@ def test_higher_confidence_message_classification_preserved(tmp_path):
         conn.close()
 
 
+def test_thread_inheritance_preserves_unrelated_explicit_classification(tmp_path):
+    """Thread inheritance adds evidence without overwriting unrelated explicit rows."""
+    db_path, account_id = _setup(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        usps_msgs = conn.execute(
+            "SELECT id, thread_key FROM messages WHERE sender = 'noreply@usps.com' "
+            "ORDER BY id",
+        ).fetchall()
+        msg1_id = usps_msgs[0][0]
+        thread_key = usps_msgs[0][1]
+
+        conn.execute(
+            """
+            INSERT INTO classifications
+              (account_id, target_type, message_db_id, thread_key, category_path,
+               classifier_type, classifier_name, confidence)
+            VALUES (?, 'message', ?, ?, 'medical/hospital-billing',
+                    'rule', 'manual-pre', 1.0)
+            """,
+            (account_id, msg1_id, thread_key),
+        )
+        conn.commit()
+
+        run_rule_classification(conn, CONFIG, level="thread", account_id=account_id)
+
+        rows = conn.execute(
+            "SELECT category_path, classifier_type, classifier_name, confidence "
+            "FROM classifications WHERE message_db_id = ? AND account_id = ?",
+            (msg1_id, account_id),
+        ).fetchall()
+        inherited_count = conn.execute(
+            "SELECT COUNT(*) FROM classifications WHERE classifier_type = 'rule_inherited' "
+            "AND account_id = ?",
+            (account_id,),
+        ).fetchone()[0]
+
+        assert rows == [("medical/hospital-billing", "rule", "manual-pre", 1.0)]
+        assert inherited_count == 2
+    finally:
+        conn.close()
+
+
+def test_thread_classification_records_rule_source_for_inheritance(tmp_path):
+    db_path, account_id = _setup(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        run_rule_classification(conn, CONFIG, level="thread", account_id=account_id)
+
+        thread_row = conn.execute(
+            "SELECT classifier_type, classifier_name, prompt_version, summary, confidence "
+            "FROM classifications WHERE target_type = 'thread' AND account_id = ?",
+            (account_id,),
+        ).fetchone()
+        inherited_row = conn.execute(
+            "SELECT classifier_type, classifier_name, prompt_version, confidence "
+            "FROM classifications WHERE classifier_type = 'rule_inherited' AND account_id = ? "
+            "ORDER BY id LIMIT 1",
+            (account_id,),
+        ).fetchone()
+
+        assert thread_row == (
+            "rule",
+            "usps-informed-delivery",
+            "rules-v1",
+            "Thread classified by rule: usps-informed-delivery",
+            1.0,
+        )
+        assert inherited_row == ("rule_inherited", "usps-informed-delivery", "rules-v1", 1.0)
+    finally:
+        conn.close()
+
+
 def test_thread_classification_account_scoped(tmp_path):
     """Thread classification for account A does not affect account B."""
     db_path_a = tmp_path / "a.sqlite"
