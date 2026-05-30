@@ -15,6 +15,10 @@ from .naming import slugify
 from .normalize import normalize_message
 
 
+class SourceIdentityError(RuntimeError):
+    """Raised when an existing source path no longer matches its recorded content hash."""
+
+
 def _file_sha256(path: Path, chunk: int = 1 << 20) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -28,22 +32,50 @@ def _get_or_create_source(
     file_path: Path,
     source_name: str,
     account_id: int,
+    *,
+    force: bool = False,
 ) -> int:
     source_slug = slugify(source_name)
+    stat = file_path.stat()
+    file_sha256 = _file_sha256(file_path)
+
     row = conn.execute(
-        "SELECT id FROM mbox_sources WHERE account_id = ? AND file_path = ?",
+        "SELECT id, file_sha256 FROM mbox_sources WHERE account_id = ? AND file_path = ?",
         (account_id, str(file_path)),
     ).fetchone()
     if row:
-        return row[0]
+        source_id, recorded_sha256 = row
+        if recorded_sha256 and recorded_sha256 != file_sha256 and not force:
+            raise SourceIdentityError(
+                "Source MBOX content hash changed for this account/path; "
+                "rerun with --force to replace local message evidence."
+            )
+        conn.execute(
+            """
+            UPDATE mbox_sources
+            SET file_size = ?, file_sha256 = ?, source_mtime = ?
+            WHERE id = ?
+            """,
+            (stat.st_size, file_sha256, stat.st_mtime, source_id),
+        )
+        conn.commit()
+        return source_id
 
-    stat = file_path.stat()
     conn.execute(
         """
-        INSERT INTO mbox_sources (account_id, source_name, source_slug, file_path, file_size, source_mtime)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO mbox_sources
+          (account_id, source_name, source_slug, file_path, file_size, file_sha256, source_mtime)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (account_id, source_name, source_slug, str(file_path), stat.st_size, stat.st_mtime),
+        (
+            account_id,
+            source_name,
+            source_slug,
+            str(file_path),
+            stat.st_size,
+            file_sha256,
+            stat.st_mtime,
+        ),
     )
     conn.commit()
     return conn.execute(
@@ -79,6 +111,26 @@ def _get_resume_run(conn: sqlite3.Connection, source_id: int) -> tuple[int, str 
 def _update_run(conn: sqlite3.Connection, run_id: int, **kwargs: Any) -> None:
     sets = ", ".join(f"{k} = :{k}" for k in kwargs)
     conn.execute(f"UPDATE ingest_runs SET {sets} WHERE id = :_id", {"_id": run_id, **kwargs})
+
+
+def _record_ingest_error(
+    conn: sqlite3.Connection,
+    *,
+    account_id: int,
+    run_id: int,
+    source_id: int,
+    mbox_key: str | None,
+    error_type: str,
+    error_message: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO ingest_errors
+          (account_id, ingest_run_id, source_id, mbox_key, error_type, error_message)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (account_id, run_id, source_id, mbox_key, error_type, error_message),
+    )
 
 
 def _upsert_thread(
@@ -216,7 +268,9 @@ def ingest_mbox(
                 )
 
         account_id: int = account["id"]  # type: ignore[index]
-        source_id = _get_or_create_source(conn, mbox_path, source_name, account_id)
+        source_id = _get_or_create_source(
+            conn, mbox_path, source_name, account_id, force=force
+        )
 
         if force:
             print(
@@ -247,16 +301,32 @@ def ingest_mbox(
             run_id = _create_run(conn, source_id, account_id)
 
         counts = {"seen": 0, "inserted": 0, "skipped": 0, "replaced": 0, "errors": 0}
-        last_key_processed: str | None = resume_key
-        past_resume_key = resume_key is None
 
         mbox = mailbox.mbox(str(mbox_path), factory=None, create=False)
         try:
-            keys = mbox.keys()
+            keys = list(mbox.keys())
         except Exception as exc:
             _update_run(conn, run_id, status="failed")
             conn.commit()
             raise RuntimeError(f"Failed to open MBOX: {exc}") from exc
+
+        if resume_key is not None and resume_key not in {str(key) for key in keys}:
+            counts["errors"] += 1
+            _record_ingest_error(
+                conn,
+                account_id=account_id,
+                run_id=run_id,
+                source_id=source_id,
+                mbox_key=resume_key,
+                error_type="InvalidResumeCheckpoint",
+                error_message=(
+                    f"Resume checkpoint {resume_key!r} was not found; restarted from beginning."
+                ),
+            )
+            resume_key = None
+
+        last_key_processed: str | None = resume_key
+        past_resume_key = resume_key is None
 
         try:
             for mbox_key in keys:
@@ -274,10 +344,14 @@ def ingest_mbox(
                     raw_msg = mbox.get_message(mbox_key)
                 except Exception as exc:
                     counts["errors"] += 1
-                    conn.execute(
-                        "INSERT INTO ingest_errors (account_id, ingest_run_id, source_id, mbox_key, error_type, error_message) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (account_id, run_id, source_id, str_key, type(exc).__name__, str(exc)),
+                    _record_ingest_error(
+                        conn,
+                        account_id=account_id,
+                        run_id=run_id,
+                        source_id=source_id,
+                        mbox_key=str_key,
+                        error_type=type(exc).__name__,
+                        error_message="Failed to read message from source MBOX.",
                     )
                     continue
 
@@ -285,10 +359,14 @@ def ingest_mbox(
                     record = normalize_message(raw_msg, source_id, str_key, account_id)
                 except Exception as exc:
                     counts["errors"] += 1
-                    conn.execute(
-                        "INSERT INTO ingest_errors (account_id, ingest_run_id, source_id, mbox_key, error_type, error_message) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (account_id, run_id, source_id, str_key, type(exc).__name__, str(exc)),
+                    _record_ingest_error(
+                        conn,
+                        account_id=account_id,
+                        run_id=run_id,
+                        source_id=source_id,
+                        mbox_key=str_key,
+                        error_type=type(exc).__name__,
+                        error_message="Failed to normalize message.",
                     )
                     continue
 
@@ -355,21 +433,33 @@ def ingest_mbox(
                                     conn=conn,
                                     extract_to_disk=True,
                                 )
-                            except Exception as exc:
-                                conn.execute(
-                                    "INSERT INTO ingest_errors (account_id, ingest_run_id, source_id, mbox_key, error_type, error_message) "
-                                    "VALUES (?, ?, ?, ?, ?, ?)",
-                                    (account_id, run_id, source_id, str_key, "AttachmentError", str(exc)),
+                            except Exception:
+                                counts["errors"] += 1
+                                _record_ingest_error(
+                                    conn,
+                                    account_id=account_id,
+                                    run_id=run_id,
+                                    source_id=source_id,
+                                    mbox_key=str_key,
+                                    error_type="AttachmentError",
+                                    error_message=(
+                                        "Failed to extract attachment metadata/content "
+                                        "to local storage."
+                                    ),
                                 )
                     else:
                         counts["skipped"] += 1
 
                 except Exception as exc:
                     counts["errors"] += 1
-                    conn.execute(
-                        "INSERT INTO ingest_errors (account_id, ingest_run_id, source_id, mbox_key, error_type, error_message) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (account_id, run_id, source_id, str_key, type(exc).__name__, str(exc)[:500]),
+                    _record_ingest_error(
+                        conn,
+                        account_id=account_id,
+                        run_id=run_id,
+                        source_id=source_id,
+                        mbox_key=str_key,
+                        error_type=type(exc).__name__,
+                        error_message="Failed to store normalized message evidence.",
                     )
                     continue
 
