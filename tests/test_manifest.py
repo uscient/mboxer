@@ -135,24 +135,58 @@ def test_build_notebooklm_manifest_rows_fields(tmp_path):
         export_profile="raw",
         security_profile="scrubbed",
         created_at="2024-01-04T00:00:00Z",
+        source_database_path="var/mboxer.sqlite",
+        source_config_path="config/mboxer.example.yaml",
+        scrub_enabled=True,
+        redaction_policy={"redact_phone_numbers": True},
+        limit_profile="tiny",
+        limit_settings={"max_messages_per_source": 10},
+        split_strategy={"split_by_year": True},
+        export_format={"extension": "md"},
+        candidate_message_count=4,
+        excluded_message_count=1,
+        warnings=["target_sources exceeds effective budget"],
     )
     assert len(rows) == 1
     r = rows[0]
+    assert r["manifest_schema_version"] == "1"
+    assert r["tool_name"] == "mboxer"
+    assert r["export_kind"] == "notebooklm"
     assert r["account_key"] == "test-gmail"
     assert r["account_display_name"] == "Test Gmail"
-    assert r["account_email_address"] == "user@example.com"
+    assert r["account_email_address"] == ""
+    assert r["account_email_address_present"] is True
+    assert r["source_database_present"] is True
+    assert r["source_config_present"] is True
+    assert r["source_database_path"] == "var/mboxer.sqlite"
+    assert r["source_config_path"] == "config/mboxer.example.yaml"
     assert r["source_file"] == fake_path.name
+    assert r["source_path"] == fake_path.name
+    assert r["generated_file"] == fake_path.name
+    assert r["generated_path"] == fake_path.name
+    assert len(r["generated_sha256"]) == 64
     assert r["source_pack"] == fake_path.name
     assert r["category_path"] == "medical"
+    assert r["date_band"] == "2024"
     assert r["message_count"] == 3
     assert r["thread_count"] == 2
+    assert r["candidate_message_count"] == 4
+    assert r["excluded_message_count"] == 1
+    assert r["total_message_count"] == 3
+    assert r["total_file_count"] == 1
     assert r["word_count"] == 150
+    assert json.loads(r["redaction_policy_json"]) == {"redact_phone_numbers": True}
+    assert json.loads(r["limit_settings_json"])["max_messages_per_source"] == 10
+    assert json.loads(r["split_strategy_json"]) == {"split_by_year": True}
+    assert json.loads(r["export_format_json"]) == {"extension": "md"}
+    assert json.loads(r["warnings_json"]) == ["target_sources exceeds effective budget"]
     assert r["contains_scrubbed_content"] is False
     assert r["created_at"] == "2024-01-04T00:00:00Z"
 
 
 def test_build_jsonl_manifest_rows_fields(tmp_path):
     out_path = tmp_path / "messages.jsonl"
+    out_path.write_text('{"ok": true}\n')
     rows = build_jsonl_manifest_rows(
         account_key="test-gmail",
         account_display_name="Test Gmail",
@@ -167,15 +201,39 @@ def test_build_jsonl_manifest_rows_fields(tmp_path):
         export_profile=None,
         security_profile="scrubbed",
         created_at="2025-01-01T00:00:00Z",
+        source_database_path="var/mboxer.sqlite",
+        source_config_path="config/mboxer.example.yaml",
+        scrub_enabled=True,
+        redaction_policy={"redact_phone_numbers": True},
+        export_format={"include_classification": True},
+        candidate_message_count=11,
+        excluded_message_count=1,
     )
     assert len(rows) == 1
     r = rows[0]
+    assert r["manifest_schema_version"] == "1"
+    assert r["tool_name"] == "mboxer"
+    assert r["export_kind"] == "jsonl"
     assert r["account_key"] == "test-gmail"
+    assert r["account_email_address"] == ""
+    assert r["account_email_address_present"] is True
+    assert r["source_database_present"] is True
+    assert r["source_config_present"] is True
     assert r["source_file"] == "messages.jsonl"
+    assert r["source_path"] == "messages.jsonl"
+    assert r["generated_file"] == "messages.jsonl"
+    assert r["generated_path"] == "messages.jsonl"
+    assert len(r["generated_sha256"]) == 64
     assert r["message_count"] == 10
     assert r["thread_count"] == 4
+    assert r["candidate_message_count"] == 11
+    assert r["excluded_message_count"] == 1
+    assert r["total_message_count"] == 10
+    assert r["total_file_count"] == 1
     assert r["byte_count"] == 102400
     assert r["security_profile"] == "scrubbed"
+    assert json.loads(r["redaction_policy_json"]) == {"redact_phone_numbers": True}
+    assert json.loads(r["export_format_json"]) == {"include_classification": True}
 
 
 def test_write_notebooklm_manifest_creates_files(tmp_path):
@@ -211,6 +269,10 @@ def test_write_jsonl_manifest_path(tmp_path):
 def _do_notebooklm_export(db_path, tmp_path, account_key="test-gmail", dry_run=False):
     config = load_config("config/mboxer.example.yaml")
     limits = resolve_notebooklm_limits(config, "ultra_safe")
+    export_config = {
+        **CLASSIFY_CONFIG,
+        "exports": {"notebooklm": config["exports"]["notebooklm"]},
+    }
     conn = sqlite3.connect(db_path)
     try:
         account = conn.execute(
@@ -219,13 +281,14 @@ def _do_notebooklm_export(db_path, tmp_path, account_key="test-gmail", dry_run=F
         ).fetchone()
         account_id, display_name, email_address = account
         return export_notebooklm(
-            conn, CLASSIFY_CONFIG, limits, tmp_path / "nlm_out",
+            conn, export_config, limits, tmp_path / "nlm_out",
             account_id=account_id,
             account_key=account_key,
             account_email=email_address,
             account_display_name=display_name,
             dry_run=dry_run,
             db_path=str(db_path),
+            config_path="config/mboxer.example.yaml",
         )
     finally:
         conn.close()
@@ -263,7 +326,10 @@ def test_notebooklm_manifest_includes_account_metadata(tmp_path, db_with_data):
     for row in data:
         assert row["account_key"] == "test-gmail"
         assert row["account_display_name"] == "Test Gmail Account"
-        assert row["account_email_address"] == "user@example.com"
+        # Account email exists in local account metadata, but exported manifests avoid
+        # carrying it because account_key/display_name are enough for manifest review.
+        assert row["account_email_address"] == ""
+        assert row["account_email_address_present"] is True
 
 
 def test_notebooklm_manifest_counts_match_files(tmp_path, db_with_data):
@@ -286,6 +352,65 @@ def test_notebooklm_manifest_security_profile(tmp_path, db_with_data):
     for row in data:
         assert row["security_profile"] == "scrubbed"
         assert row["contains_scrubbed_content"] is False
+
+
+def test_notebooklm_manifest_includes_lineage_metadata(tmp_path, db_with_data):
+    stats = _do_notebooklm_export(db_with_data, tmp_path)
+    data = json.loads(Path(stats["manifest_json"]).read_text())
+    row = data[0]
+    assert row["manifest_schema_version"] == "1"
+    assert row["tool_name"] == "mboxer"
+    assert row["export_kind"] == "notebooklm"
+    assert row["source_database_path"] == db_with_data.name
+    assert row["source_config_path"] == "config/mboxer.example.yaml"
+    assert row["source_database_present"] is True
+    assert row["source_config_present"] is True
+    assert Path(row["source_path"]).is_absolute() is False
+    assert Path(row["generated_path"]).is_absolute() is False
+    assert row["limit_profile"] == "ultra_safe"
+    assert json.loads(row["limit_settings_json"])["profile_name"] == "ultra_safe"
+    assert json.loads(row["split_strategy_json"])["split_by_year"] is True
+    assert json.loads(row["export_format_json"])["extension"] == "md"
+    assert len(row["generated_sha256"]) == 64
+    assert row["candidate_message_count"] == 2
+    assert row["excluded_message_count"] == 0
+    assert row["total_message_count"] == stats["messages_exported"]
+    assert row["total_file_count"] == stats["files_written"]
+
+
+def test_notebooklm_export_table_records_lineage_metadata(tmp_path, db_with_data):
+    _do_notebooklm_export(db_with_data, tmp_path)
+    conn = sqlite3.connect(db_with_data)
+    try:
+        export_profile, metadata_json = conn.execute(
+            "SELECT export_profile, metadata_json FROM exports ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    metadata = json.loads(metadata_json)
+    assert export_profile == "scrubbed"
+    assert metadata["export_kind"] == "notebooklm"
+    assert metadata["effective_default_export_profile"] == "scrubbed"
+    assert metadata["source_database_path"] == str(db_with_data)
+    assert metadata["source_config_path"] == "config/mboxer.example.yaml"
+    assert metadata["limit_profile"] == "ultra_safe"
+    assert metadata["candidate_message_count"] == 2
+    assert metadata["excluded_message_count"] == 0
+
+
+def test_notebooklm_manifest_omits_raw_body_text(tmp_path, db_with_data):
+    stats = _do_notebooklm_export(db_with_data, tmp_path)
+    manifest_text = Path(stats["manifest_json"]).read_text()
+    assert "Balance due: $350.00." not in manifest_text
+    assert "Here are your mail pieces for today." not in manifest_text
+
+
+def test_notebooklm_manifest_omits_absolute_local_paths(tmp_path, db_with_data):
+    stats = _do_notebooklm_export(db_with_data, tmp_path)
+    manifest_text = Path(stats["manifest_json"]).read_text()
+    assert str(tmp_path) not in manifest_text
+    assert str(db_with_data) not in manifest_text
 
 
 def test_notebooklm_dry_run_no_manifest_written(tmp_path, db_with_data):
@@ -314,6 +439,8 @@ def test_jsonl_manifest_created(tmp_path, db_with_data):
             account_key="test-gmail",
             account_display_name="Test Gmail Account",
             account_email_address="user@example.com",
+            db_path=str(db_with_data),
+            config_path="config/mboxer.example.yaml",
         )
     finally:
         conn.close()
@@ -337,6 +464,8 @@ def test_jsonl_manifest_fields(tmp_path, db_with_data):
             account_key="test-gmail",
             account_display_name="Test Gmail Account",
             account_email_address="user@example.com",
+            db_path=str(db_with_data),
+            config_path="config/mboxer.example.yaml",
         )
     finally:
         conn.close()
@@ -346,13 +475,117 @@ def test_jsonl_manifest_fields(tmp_path, db_with_data):
     row = data[0]
     assert row["account_key"] == "test-gmail"
     assert row["account_display_name"] == "Test Gmail Account"
-    assert row["account_email_address"] == "user@example.com"
+    assert row["account_email_address"] == ""
+    assert row["account_email_address_present"] is True
     assert row["source_file"] == "messages.jsonl"
+    assert row["manifest_schema_version"] == "1"
+    assert row["tool_name"] == "mboxer"
+    assert row["export_kind"] == "jsonl"
+    assert row["source_database_path"] == db_with_data.name
+    assert row["source_config_path"] == "config/mboxer.example.yaml"
+    assert row["source_database_present"] is True
+    assert row["source_config_present"] is True
+    assert Path(row["source_path"]).is_absolute() is False
+    assert Path(row["generated_path"]).is_absolute() is False
+    assert len(row["generated_sha256"]) == 64
+    assert row["candidate_message_count"] == 2
+    assert row["excluded_message_count"] == 0
     assert row["message_count"] == 2
     assert row["byte_count"] > 0
     assert row["security_profile"] == "scrubbed"
     for field in MANIFEST_FIELDS:
         assert field in row, f"Missing manifest field: {field}"
+
+
+def test_jsonl_manifest_omits_raw_body_text(tmp_path, db_with_data):
+    out = tmp_path / "test-gmail" / "messages.jsonl"
+    conn = sqlite3.connect(db_with_data)
+    try:
+        account_id = conn.execute(
+            "SELECT id FROM accounts WHERE account_key = 'test-gmail'"
+        ).fetchone()[0]
+        result = export_jsonl(
+            conn, INGEST_CONFIG, out,
+            account_id=account_id,
+            account_key="test-gmail",
+            db_path=str(db_with_data),
+        )
+    finally:
+        conn.close()
+
+    manifest_text = Path(result["manifest_path"]).read_text()
+    assert "Balance due: $350.00." not in manifest_text
+    assert "Here are your mail pieces for today." not in manifest_text
+
+
+def test_jsonl_manifest_omits_absolute_local_paths(tmp_path, db_with_data):
+    out = tmp_path / "test-gmail" / "messages.jsonl"
+    conn = sqlite3.connect(db_with_data)
+    try:
+        account_id = conn.execute(
+            "SELECT id FROM accounts WHERE account_key = 'test-gmail'"
+        ).fetchone()[0]
+        result = export_jsonl(
+            conn, INGEST_CONFIG, out,
+            account_id=account_id,
+            account_key="test-gmail",
+            db_path=str(db_with_data),
+            config_path=str(tmp_path / "private-config.yaml"),
+        )
+    finally:
+        conn.close()
+
+    manifest_text = Path(result["manifest_path"]).read_text()
+    data = json.loads(manifest_text)
+    assert str(tmp_path) not in manifest_text
+    assert str(db_with_data) not in manifest_text
+    assert data[0]["source_database_path"] == db_with_data.name
+    assert data[0]["source_config_path"] == "private-config.yaml"
+
+
+def test_jsonl_export_table_records_lineage_metadata(tmp_path, db_with_data):
+    out = tmp_path / "test-gmail" / "messages.jsonl"
+    conn = sqlite3.connect(db_with_data)
+    try:
+        account_id = conn.execute(
+            "SELECT id FROM accounts WHERE account_key = 'test-gmail'"
+        ).fetchone()[0]
+        result = export_jsonl(
+            conn, INGEST_CONFIG, out,
+            account_id=account_id,
+            account_key="test-gmail",
+            db_path=str(db_with_data),
+            config_path=str(tmp_path / "private-config.yaml"),
+        )
+        export_row = conn.execute(
+            """
+            SELECT account_id, export_type, export_profile, output_path, source_count,
+                   message_count, status, metadata_json
+            FROM exports
+            WHERE id = ?
+            """,
+            (result["export_id"],),
+        ).fetchone()
+        item_rows = conn.execute(
+            "SELECT output_file, category_path, sequence FROM export_items WHERE export_id = ?",
+            (result["export_id"],),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    metadata = json.loads(export_row[7])
+    assert export_row[:7] == (
+        account_id, "jsonl", "scrubbed", str(out), 1, result["messages_written"], "completed"
+    )
+    assert metadata["export_kind"] == "jsonl"
+    assert metadata["source_database_path"] == str(db_with_data)
+    assert metadata["source_config_path"] == str(tmp_path / "private-config.yaml")
+    assert metadata["output_path"] == str(out)
+    assert metadata["effective_default_export_profile"] == "scrubbed"
+    assert metadata["candidate_message_count"] == 2
+    assert metadata["excluded_message_count"] == 0
+    assert len(metadata["generated_sha256"]) == 64
+    assert item_rows == [(str(out), "", 1)]
 
 
 def test_jsonl_manifest_thread_count(tmp_path, db_with_data):

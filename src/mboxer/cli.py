@@ -422,6 +422,8 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
                 export_profile=args.export_profile,
                 dry_run=args.dry_run,
                 db_path=str(db_path),
+                config_path=args.config,
+                warnings=warnings,
             )
         finally:
             conn.close()
@@ -461,6 +463,8 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
             account_key=account_key,
             account_display_name=account.get("display_name"),
             account_email_address=account.get("email_address"),
+            db_path=str(db_path),
+            config_path=args.config,
         )
     finally:
         conn.close()

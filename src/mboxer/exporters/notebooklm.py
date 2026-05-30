@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import textwrap
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -307,22 +309,32 @@ def export_notebooklm(
     export_profile: str | None = None,
     dry_run: bool = False,
     db_path: str = "",
+    config_path: str | None = None,
+    warnings: list[str] | None = None,
     include_unclassified: bool = True,
 ) -> dict[str, Any]:
     records = _fetch_classified_messages(conn, account_id)
     if include_unclassified:
         records += _fetch_unclassified_messages(conn, account_id)
 
+    candidate_message_count = len(records)
     records = _prepare_records_for_export(records, config, export_profile)
+    excluded_message_count = candidate_message_count - len(records)
     groups = _group_by_category_and_band(records)
     effective_budget = limits.effective_source_budget
-    security_profile = (config.get("security") or {}).get("default_export_profile")
+    security = config.get("security") or {}
+    security_profile = security.get("default_export_profile")
+    effective_profile = export_profile or security_profile or "raw"
+    notebooklm_config = (config.get("exports") or {}).get("notebooklm") or {}
 
     stats: dict[str, Any] = {
         "account_key": account_key,
         "groups": len(groups),
         "files_written": 0,
         "messages_exported": 0,
+        "candidate_message_count": candidate_message_count,
+        "excluded_message_count": excluded_message_count,
+        "warnings_count": len(warnings or []),
         "budget_used": 0,
         "dry_run": dry_run,
     }
@@ -334,7 +346,9 @@ def export_notebooklm(
         return stats
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    export_id = _start_export_run(conn, "notebooklm", str(out_dir), limits.profile_name, account_id)
+    export_id = _start_export_run(
+        conn, "notebooklm", str(out_dir), effective_profile, limits.profile_name, account_id
+    )
 
     all_file_stats: list[dict[str, Any]] = []
     budget_used = 0
@@ -364,12 +378,34 @@ def export_notebooklm(
 
     conn.execute(
         "UPDATE exports SET status = 'completed', finished_at = CURRENT_TIMESTAMP, "
-        "source_count = ?, message_count = ? WHERE id = ?",
-        (len(all_file_stats), stats["messages_exported"], export_id),
+        "source_count = ?, message_count = ?, metadata_json = ? WHERE id = ?",
+        (
+            len(all_file_stats),
+            stats["messages_exported"],
+            _export_metadata_json(
+                config=config,
+                limits=limits,
+                db_path=db_path,
+                config_path=config_path,
+                export_profile=export_profile,
+                effective_profile=effective_profile,
+                candidate_message_count=candidate_message_count,
+                excluded_message_count=excluded_message_count,
+                file_count=len(all_file_stats),
+                message_count=stats["messages_exported"],
+                warnings=warnings,
+            ),
+            export_id,
+        ),
     )
     conn.commit()
 
-    from .manifest import build_notebooklm_manifest_rows, write_notebooklm_manifest
+    from .manifest import (
+        build_notebooklm_manifest_rows,
+        security_manifest_posture,
+        write_notebooklm_manifest,
+    )
+    scrub_enabled, redaction_policy = security_manifest_posture(config)
     manifest_rows = build_notebooklm_manifest_rows(
         all_file_stats,
         account_key=account_key,
@@ -378,6 +414,17 @@ def export_notebooklm(
         export_profile=export_profile,
         security_profile=security_profile,
         created_at=now,
+        source_database_path=db_path,
+        source_config_path=config_path,
+        scrub_enabled=scrub_enabled,
+        redaction_policy=redaction_policy,
+        limit_profile=limits.profile_name,
+        limit_settings=asdict(limits),
+        split_strategy=notebooklm_config.get("split_strategy") or {},
+        export_format=notebooklm_config.get("format") or {},
+        candidate_message_count=candidate_message_count,
+        excluded_message_count=excluded_message_count,
+        warnings=warnings,
     )
     csv_path, json_path = write_notebooklm_manifest(out_dir, account_key, manifest_rows)
 
@@ -388,17 +435,61 @@ def export_notebooklm(
     return stats
 
 
+def _export_metadata_json(
+    *,
+    config: dict[str, Any],
+    limits: NotebookLMLimits,
+    db_path: str,
+    config_path: str | None,
+    export_profile: str | None,
+    effective_profile: str,
+    candidate_message_count: int,
+    excluded_message_count: int,
+    file_count: int,
+    message_count: int,
+    warnings: list[str] | None,
+) -> str:
+    from .manifest import MANIFEST_SCHEMA_VERSION, TOOL_NAME, security_manifest_posture
+
+    scrub_enabled, redaction_policy = security_manifest_posture(config)
+    notebooklm_config = (config.get("exports") or {}).get("notebooklm") or {}
+    metadata = {
+        "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
+        "tool_name": TOOL_NAME,
+        "export_kind": "notebooklm",
+        "source_database_path": db_path,
+        "source_config_path": config_path or "",
+        "export_profile_override": export_profile or "",
+        "effective_default_export_profile": effective_profile,
+        "security_profile": (config.get("security") or {}).get("default_export_profile") or "",
+        "scrub_enabled": scrub_enabled,
+        "redaction_policy": redaction_policy,
+        "limit_profile": limits.profile_name,
+        "limit_settings": asdict(limits),
+        "split_strategy": notebooklm_config.get("split_strategy") or {},
+        "export_format": notebooklm_config.get("format") or {},
+        "candidate_message_count": candidate_message_count,
+        "excluded_message_count": excluded_message_count,
+        "source_count": file_count,
+        "message_count": message_count,
+        "warnings": warnings or [],
+    }
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+
+
 def _start_export_run(
     conn: sqlite3.Connection,
     export_type: str,
     output_path: str,
+    export_profile: str,
     profile: str,
     account_id: int | None,
 ) -> int:
     conn.execute(
-        "INSERT INTO exports (account_id, export_type, export_profile, output_path, notebooklm_limit_profile) "
-        "VALUES (?, ?, 'raw', ?, ?)",
-        (account_id, export_type, output_path, profile),
+        "INSERT INTO exports "
+        "(account_id, export_type, export_profile, output_path, notebooklm_limit_profile) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (account_id, export_type, export_profile, output_path, profile),
     )
     conn.commit()
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]

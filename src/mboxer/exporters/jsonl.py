@@ -20,12 +20,16 @@ def export_jsonl(
     account_display_name: str | None = None,
     account_email_address: str | None = None,
     export_profile: str | None = None,
+    db_path: str | None = None,
+    config_path: str | None = None,
 ) -> dict[str, Any]:
-    include_classification = config.get("exports", {}).get("jsonl", {}).get("include_classification", True)
+    jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
+    include_classification = jsonl_config.get("include_classification", True)
     security = config.get("security") or {}
     config_default = security.get("default_export_profile", "raw")
     scrub_enabled = security.get("scrub_enabled", True)
     security_profile = security.get("default_export_profile")
+    effective_profile = export_profile or config_default
 
     if account_id is not None:
         rows = conn.execute(
@@ -87,11 +91,14 @@ def export_jsonl(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     written = 0
+    candidate_message_count = len(rows)
+    excluded_message_count = 0
     any_scrubbed = False
     thread_keys: set[str] = set()
     date_min: str | None = None
     date_max: str | None = None
     word_count = 0
+    export_id = _start_export_run(conn, "jsonl", str(out_path), effective_profile, account_id)
 
     with out_path.open("w", encoding="utf-8") as f:
         for row in rows:
@@ -101,6 +108,7 @@ def export_jsonl(
             per_record_profile = (classifications.get(record["id"]) or {}).get("export_profile")
             effective = export_profile or resolve_export_profile(per_record_profile, config_default)
             if not is_exportable(effective):
+                excluded_message_count += 1
                 continue
 
             record["account_key"] = account_key
@@ -142,7 +150,8 @@ def export_jsonl(
     byte_count = out_path.stat().st_size if written else 0
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    from .manifest import build_jsonl_manifest_rows, write_jsonl_manifest
+    from .manifest import build_jsonl_manifest_rows, security_manifest_posture, write_jsonl_manifest
+    manifest_scrub_enabled, redaction_policy = security_manifest_posture(config)
     manifest_rows = build_jsonl_manifest_rows(
         account_key=account_key,
         account_display_name=account_display_name,
@@ -158,11 +167,120 @@ def export_jsonl(
         security_profile=security_profile,
         contains_scrubbed_content=any_scrubbed,
         created_at=now,
+        source_database_path=db_path,
+        source_config_path=config_path,
+        scrub_enabled=manifest_scrub_enabled,
+        redaction_policy=redaction_policy,
+        export_format=jsonl_config,
+        candidate_message_count=candidate_message_count,
+        excluded_message_count=excluded_message_count,
     )
     manifest_path = write_jsonl_manifest(out_path, manifest_rows)
+    source_count = 1 if out_path.exists() else 0
+    conn.execute(
+        """
+        INSERT INTO export_items (account_id, export_id, output_file, category_path, sequence)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (account_id, export_id, str(out_path), "", 1),
+    )
+    conn.execute(
+        """
+        UPDATE exports
+        SET status = 'completed',
+            finished_at = CURRENT_TIMESTAMP,
+            source_count = ?,
+            message_count = ?,
+            metadata_json = ?
+        WHERE id = ?
+        """,
+        (
+            source_count,
+            written,
+            _jsonl_export_metadata_json(
+                config=config,
+                db_path=db_path,
+                config_path=config_path,
+                out_path=out_path,
+                export_profile=export_profile,
+                effective_profile=effective_profile,
+                candidate_message_count=candidate_message_count,
+                excluded_message_count=excluded_message_count,
+                source_count=source_count,
+                message_count=written,
+                contains_scrubbed_content=any_scrubbed,
+                generated_sha256=manifest_rows[0]["generated_sha256"],
+            ),
+            export_id,
+        ),
+    )
+    conn.commit()
 
     return {
+        "export_id": export_id,
         "messages_written": written,
         "manifest_path": str(manifest_path),
         "contains_scrubbed_content": any_scrubbed,
+        "candidate_message_count": candidate_message_count,
+        "excluded_message_count": excluded_message_count,
     }
+
+
+def _start_export_run(
+    conn: sqlite3.Connection,
+    export_type: str,
+    output_path: str,
+    export_profile: str,
+    account_id: int | None,
+) -> int:
+    conn.execute(
+        """
+        INSERT INTO exports (account_id, export_type, export_profile, output_path)
+        VALUES (?, ?, ?, ?)
+        """,
+        (account_id, export_type, export_profile, output_path),
+    )
+    conn.commit()
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _jsonl_export_metadata_json(
+    *,
+    config: dict[str, Any],
+    db_path: str | None,
+    config_path: str | None,
+    out_path: Path,
+    export_profile: str | None,
+    effective_profile: str,
+    candidate_message_count: int,
+    excluded_message_count: int,
+    source_count: int,
+    message_count: int,
+    contains_scrubbed_content: bool,
+    generated_sha256: str,
+) -> str:
+    from .manifest import MANIFEST_SCHEMA_VERSION, TOOL_NAME, security_manifest_posture
+
+    scrub_enabled, redaction_policy = security_manifest_posture(config)
+    jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
+    metadata = {
+        "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
+        "tool_name": TOOL_NAME,
+        "export_kind": "jsonl",
+        "source_database_path": db_path or "",
+        "source_config_path": config_path or "",
+        "output_path": str(out_path),
+        "export_profile_override": export_profile or "",
+        "effective_default_export_profile": effective_profile,
+        "security_profile": (config.get("security") or {}).get("default_export_profile") or "",
+        "scrub_enabled": scrub_enabled,
+        "redaction_policy": redaction_policy,
+        "export_format": jsonl_config,
+        "candidate_message_count": candidate_message_count,
+        "excluded_message_count": excluded_message_count,
+        "source_count": source_count,
+        "message_count": message_count,
+        "contains_scrubbed_content": contains_scrubbed_content,
+        "generated_sha256": generated_sha256,
+    }
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)

@@ -282,11 +282,14 @@ def test_nlm_exclude_omits_record(tmp_path, db_pii):
     conn.commit()
     conn.close()
 
-    _do_nlm_export(db_pii, tmp_path / "out", RAW_CONFIG)
+    stats = _do_nlm_export(db_pii, tmp_path / "out", RAW_CONFIG)
     bodies = _read_md_bodies(tmp_path / "out")
     assert "Phone test" not in bodies
     # Other messages still present
     assert "Clean message" in bodies
+    manifest = json.loads(Path(stats["manifest_json"]).read_text())
+    assert all(row["candidate_message_count"] == 5 for row in manifest)
+    assert all(row["excluded_message_count"] == 1 for row in manifest)
 
 
 # ── NotebookLM: email redaction config ───────────────────────────────────────
@@ -474,11 +477,16 @@ def test_jsonl_exclude_omits_record(tmp_path, db_pii):
     conn.close()
 
     out = tmp_path / "test-account" / "messages.jsonl"
-    _do_jsonl_export(db_pii, out, RAW_CONFIG)
+    result = _do_jsonl_export(db_pii, out, RAW_CONFIG)
     records = [json.loads(line) for line in out.read_text().splitlines()]
     subjects = {r.get("subject") for r in records}
     assert "Phone test" not in subjects
     assert "Clean message" in subjects
+    assert result["candidate_message_count"] == 5
+    assert result["excluded_message_count"] == 1
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    assert manifest[0]["candidate_message_count"] == 5
+    assert manifest[0]["excluded_message_count"] == 1
 
 
 # ── JSONL: manifest contains_scrubbed_content ─────────────────────────────────
@@ -540,12 +548,12 @@ def test_scrub_is_account_scoped(tmp_path):
     try:
         aid_a = conn.execute("SELECT id FROM accounts WHERE account_key='account-a'").fetchone()[0]
         aid_b = conn.execute("SELECT id FROM accounts WHERE account_key='account-b'").fetchone()[0]
-        stats_a = export_notebooklm(
+        export_notebooklm(
             conn, SCRUB_CONFIG, limits, tmp_path / "out",
             account_id=aid_a, account_key="account-a",
             dry_run=False, db_path=str(db_path),
         )
-        stats_b = export_notebooklm(
+        export_notebooklm(
             conn, RAW_CONFIG, limits, tmp_path / "out",
             account_id=aid_b, account_key="account-b",
             dry_run=False, db_path=str(db_path),
