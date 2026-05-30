@@ -52,17 +52,18 @@ def _source_header(
     db_path: str,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    email_line = f"account_email: {account_email}" if account_email else ""
+    account_email_present = str(bool(account_email)).lower()
+    source_database_present = str(bool(db_path)).lower()
     return textwrap.dedent(f"""\
         # mboxer export
         account: {account_key}
-        {email_line}
+        account_email_present: {account_email_present}
         category: {category_path}
         date_band: {date_band}
         sequence: {sequence}
         messages: {message_count}
         exported_at: {now}
-        source_db: {db_path}
+        source_database_present: {source_database_present}
 
         ---
 
@@ -370,6 +371,7 @@ def export_notebooklm(
         stats["messages_exported"] += len(msgs)
 
         for fstat in written:
+            # Local operational reference, not safe lineage/event metadata.
             conn.execute(
                 "INSERT INTO export_items (account_id, export_id, output_file, category_path) "
                 "VALUES (?, ?, ?, ?)",
@@ -387,6 +389,10 @@ def export_notebooklm(
                 limits=limits,
                 db_path=db_path,
                 config_path=config_path,
+                output_path=out_dir,
+                account_key=account_key,
+                account_display_name=account_display_name,
+                account_email_address=account_email,
                 export_profile=export_profile,
                 effective_profile=effective_profile,
                 candidate_message_count=candidate_message_count,
@@ -441,6 +447,10 @@ def _export_metadata_json(
     limits: NotebookLMLimits,
     db_path: str,
     config_path: str | None,
+    output_path: Path,
+    account_key: str,
+    account_display_name: str | None,
+    account_email_address: str | None,
     export_profile: str | None,
     effective_profile: str,
     candidate_message_count: int,
@@ -449,31 +459,33 @@ def _export_metadata_json(
     message_count: int,
     warnings: list[str] | None,
 ) -> str:
-    from .manifest import MANIFEST_SCHEMA_VERSION, TOOL_NAME, security_manifest_posture
+    from .manifest import build_safe_export_run_metadata, security_manifest_posture
 
     scrub_enabled, redaction_policy = security_manifest_posture(config)
     notebooklm_config = (config.get("exports") or {}).get("notebooklm") or {}
-    metadata = {
-        "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
-        "tool_name": TOOL_NAME,
-        "export_kind": "notebooklm",
-        "source_database_path": db_path,
-        "source_config_path": config_path or "",
-        "export_profile_override": export_profile or "",
-        "effective_default_export_profile": effective_profile,
-        "security_profile": (config.get("security") or {}).get("default_export_profile") or "",
-        "scrub_enabled": scrub_enabled,
-        "redaction_policy": redaction_policy,
-        "limit_profile": limits.profile_name,
-        "limit_settings": asdict(limits),
-        "split_strategy": notebooklm_config.get("split_strategy") or {},
-        "export_format": notebooklm_config.get("format") or {},
-        "candidate_message_count": candidate_message_count,
-        "excluded_message_count": excluded_message_count,
-        "source_count": file_count,
-        "message_count": message_count,
-        "warnings": warnings or [],
-    }
+    metadata = build_safe_export_run_metadata(
+        export_kind="notebooklm",
+        account_key=account_key,
+        account_display_name=account_display_name,
+        account_email_address=account_email_address,
+        source_database_path=db_path,
+        source_config_path=config_path,
+        output_path=output_path,
+        export_profile=export_profile,
+        effective_profile=effective_profile,
+        security_profile=(config.get("security") or {}).get("default_export_profile"),
+        scrub_enabled=scrub_enabled,
+        redaction_policy=redaction_policy,
+        limit_profile=limits.profile_name,
+        limit_settings=asdict(limits),
+        split_strategy=notebooklm_config.get("split_strategy") or {},
+        export_format=notebooklm_config.get("format") or {},
+        candidate_message_count=candidate_message_count,
+        excluded_message_count=excluded_message_count,
+        source_count=file_count,
+        message_count=message_count,
+        warnings=warnings,
+    )
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 
 

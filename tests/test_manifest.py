@@ -47,6 +47,29 @@ MSGS = [
     """),
 ]
 
+ATTACHMENT_PAYLOAD = "SYNTHETIC_ATTACHMENT_SECRET_PAYLOAD"
+ATTACHMENT_MSG = textwrap.dedent(f"""\
+    From: files@example.com
+    To: user@example.com
+    Subject: Synthetic Attachment
+    Date: Wed, 03 Jan 2024 09:00:00 +0000
+    Message-ID: <manifest-attachment-001@example.com>
+    MIME-Version: 1.0
+    Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+    --BOUNDARY
+    Content-Type: text/plain; charset="utf-8"
+
+    Body with synthetic attachment.
+    --BOUNDARY
+    Content-Type: text/plain; name="secret.txt"
+    Content-Disposition: attachment; filename="secret.txt"
+    Content-Transfer-Encoding: 7bit
+
+    {ATTACHMENT_PAYLOAD}
+    --BOUNDARY--
+""")
+
 INGEST_CONFIG = {
     "paths": {"attachments_dir": "/tmp/test-manifest-attachments"},
     "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
@@ -382,18 +405,32 @@ def test_notebooklm_export_table_records_lineage_metadata(tmp_path, db_with_data
     _do_notebooklm_export(db_with_data, tmp_path)
     conn = sqlite3.connect(db_with_data)
     try:
-        export_profile, metadata_json = conn.execute(
-            "SELECT export_profile, metadata_json FROM exports ORDER BY id DESC LIMIT 1"
+        export_profile, output_path, metadata_json = conn.execute(
+            "SELECT export_profile, output_path, metadata_json "
+            "FROM exports ORDER BY id DESC LIMIT 1"
         ).fetchone()
     finally:
         conn.close()
 
+    assert output_path == str(tmp_path / "nlm_out")
+    assert str(tmp_path) not in metadata_json
+    assert str(db_with_data) not in metadata_json
+    assert "user@example.com" not in metadata_json
+
     metadata = json.loads(metadata_json)
     assert export_profile == "scrubbed"
     assert metadata["export_kind"] == "notebooklm"
+    assert metadata["account_key"] == "test-gmail"
+    assert metadata["account_display_name"] == "Test Gmail Account"
+    assert metadata["account_email_address"] == ""
+    assert metadata["account_email_address_present"] is True
     assert metadata["effective_default_export_profile"] == "scrubbed"
-    assert metadata["source_database_path"] == str(db_with_data)
+    assert metadata["source_database_path"] == db_with_data.name
     assert metadata["source_config_path"] == "config/mboxer.example.yaml"
+    assert metadata["source_database_present"] is True
+    assert metadata["source_config_present"] is True
+    assert metadata["output_path"] == "nlm_out"
+    assert metadata["output_file"] == "nlm_out"
     assert metadata["limit_profile"] == "ultra_safe"
     assert metadata["candidate_message_count"] == 2
     assert metadata["excluded_message_count"] == 0
@@ -411,6 +448,69 @@ def test_notebooklm_manifest_omits_absolute_local_paths(tmp_path, db_with_data):
     manifest_text = Path(stats["manifest_json"]).read_text()
     assert str(tmp_path) not in manifest_text
     assert str(db_with_data) not in manifest_text
+
+
+def test_notebooklm_source_header_omits_db_path_and_account_email(tmp_path, db_with_data):
+    _do_notebooklm_export(db_with_data, tmp_path)
+    md_files = list((tmp_path / "nlm_out" / "test-gmail").rglob("*.md"))
+    assert md_files
+    content = md_files[0].read_text()
+
+    assert "account: test-gmail" in content
+    assert "account_email_present: true" in content
+    assert "source_database_present: true" in content
+    assert "account_email:" not in content
+    assert "source_db:" not in content
+    assert "user@example.com" not in content
+    assert str(db_with_data) not in content
+
+
+def test_notebooklm_manifest_omits_attachment_contents(tmp_path):
+    db_path = tmp_path / "mboxer.sqlite"
+    mbox_path = tmp_path / "attachment.mbox"
+    attachments_dir = tmp_path / "attachments"
+    config = {
+        **INGEST_CONFIG,
+        "paths": {"attachments_dir": str(attachments_dir)},
+    }
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    create_account(conn, "test-gmail", email_address="user@example.com")
+    conn.close()
+    _make_mbox(mbox_path, [ATTACHMENT_MSG])
+    ingest_mbox(
+        mbox_path,
+        config=config,
+        db_path=db_path,
+        account_key="test-gmail",
+        extract_attachments_flag=True,
+    )
+
+    example_config = load_config("config/mboxer.example.yaml")
+    limits = resolve_notebooklm_limits(example_config, "ultra_safe")
+    conn = sqlite3.connect(db_path)
+    try:
+        account_id = conn.execute(
+            "SELECT id FROM accounts WHERE account_key = 'test-gmail'"
+        ).fetchone()[0]
+        stats = export_notebooklm(
+            conn,
+            config,
+            limits,
+            tmp_path / "nlm_out",
+            account_id=account_id,
+            account_key="test-gmail",
+            account_email="user@example.com",
+            db_path=str(db_path),
+            config_path=str(tmp_path / "private-config.yaml"),
+        )
+    finally:
+        conn.close()
+
+    manifest_text = Path(stats["manifest_json"]).read_text()
+    assert ATTACHMENT_PAYLOAD not in manifest_text
+    assert str(attachments_dir) not in manifest_text
+    assert "user@example.com" not in manifest_text
 
 
 def test_notebooklm_dry_run_no_manifest_written(tmp_path, db_with_data):
@@ -529,6 +629,8 @@ def test_jsonl_manifest_omits_absolute_local_paths(tmp_path, db_with_data):
             conn, INGEST_CONFIG, out,
             account_id=account_id,
             account_key="test-gmail",
+            account_display_name="Test Gmail Account",
+            account_email_address="user@example.com",
             db_path=str(db_with_data),
             config_path=str(tmp_path / "private-config.yaml"),
         )
@@ -554,6 +656,8 @@ def test_jsonl_export_table_records_lineage_metadata(tmp_path, db_with_data):
             conn, INGEST_CONFIG, out,
             account_id=account_id,
             account_key="test-gmail",
+            account_display_name="Test Gmail Account",
+            account_email_address="user@example.com",
             db_path=str(db_with_data),
             config_path=str(tmp_path / "private-config.yaml"),
         )
@@ -573,18 +677,30 @@ def test_jsonl_export_table_records_lineage_metadata(tmp_path, db_with_data):
     finally:
         conn.close()
 
+    assert str(tmp_path) not in export_row[7]
+    assert str(db_with_data) not in export_row[7]
+    assert "user@example.com" not in export_row[7]
+
     metadata = json.loads(export_row[7])
     assert export_row[:7] == (
         account_id, "jsonl", "scrubbed", str(out), 1, result["messages_written"], "completed"
     )
     assert metadata["export_kind"] == "jsonl"
-    assert metadata["source_database_path"] == str(db_with_data)
-    assert metadata["source_config_path"] == str(tmp_path / "private-config.yaml")
-    assert metadata["output_path"] == str(out)
+    assert metadata["account_key"] == "test-gmail"
+    assert metadata["account_display_name"] == "Test Gmail Account"
+    assert metadata["account_email_address"] == ""
+    assert metadata["account_email_address_present"] is True
+    assert metadata["source_database_path"] == db_with_data.name
+    assert metadata["source_config_path"] == "private-config.yaml"
+    assert metadata["source_database_present"] is True
+    assert metadata["source_config_present"] is True
+    assert metadata["output_path"] == "messages.jsonl"
+    assert metadata["output_file"] == "messages.jsonl"
     assert metadata["effective_default_export_profile"] == "scrubbed"
     assert metadata["candidate_message_count"] == 2
     assert metadata["excluded_message_count"] == 0
     assert len(metadata["generated_sha256"]) == 64
+    # export_items.output_file is retained as local operational state.
     assert item_rows == [(str(out), "", 1)]
 
 

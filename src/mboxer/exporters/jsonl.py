@@ -177,6 +177,7 @@ def export_jsonl(
     )
     manifest_path = write_jsonl_manifest(out_path, manifest_rows)
     source_count = 1 if out_path.exists() else 0
+    # Local operational reference, not safe lineage/event metadata.
     conn.execute(
         """
         INSERT INTO export_items (account_id, export_id, output_file, category_path, sequence)
@@ -202,6 +203,9 @@ def export_jsonl(
                 db_path=db_path,
                 config_path=config_path,
                 out_path=out_path,
+                account_key=account_key,
+                account_display_name=account_display_name,
+                account_email_address=account_email_address,
                 export_profile=export_profile,
                 effective_profile=effective_profile,
                 candidate_message_count=candidate_message_count,
@@ -250,6 +254,9 @@ def _jsonl_export_metadata_json(
     db_path: str | None,
     config_path: str | None,
     out_path: Path,
+    account_key: str,
+    account_display_name: str | None,
+    account_email_address: str | None,
     export_profile: str | None,
     effective_profile: str,
     candidate_message_count: int,
@@ -259,28 +266,29 @@ def _jsonl_export_metadata_json(
     contains_scrubbed_content: bool,
     generated_sha256: str,
 ) -> str:
-    from .manifest import MANIFEST_SCHEMA_VERSION, TOOL_NAME, security_manifest_posture
+    from .manifest import build_safe_export_run_metadata, security_manifest_posture
 
     scrub_enabled, redaction_policy = security_manifest_posture(config)
     jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
-    metadata = {
-        "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
-        "tool_name": TOOL_NAME,
-        "export_kind": "jsonl",
-        "source_database_path": db_path or "",
-        "source_config_path": config_path or "",
-        "output_path": str(out_path),
-        "export_profile_override": export_profile or "",
-        "effective_default_export_profile": effective_profile,
-        "security_profile": (config.get("security") or {}).get("default_export_profile") or "",
-        "scrub_enabled": scrub_enabled,
-        "redaction_policy": redaction_policy,
-        "export_format": jsonl_config,
-        "candidate_message_count": candidate_message_count,
-        "excluded_message_count": excluded_message_count,
-        "source_count": source_count,
-        "message_count": message_count,
-        "contains_scrubbed_content": contains_scrubbed_content,
-        "generated_sha256": generated_sha256,
-    }
+    metadata = build_safe_export_run_metadata(
+        export_kind="jsonl",
+        account_key=account_key,
+        account_display_name=account_display_name,
+        account_email_address=account_email_address,
+        source_database_path=db_path,
+        source_config_path=config_path,
+        output_path=out_path,
+        export_profile=export_profile,
+        effective_profile=effective_profile,
+        security_profile=(config.get("security") or {}).get("default_export_profile"),
+        scrub_enabled=scrub_enabled,
+        redaction_policy=redaction_policy,
+        export_format=jsonl_config,
+        candidate_message_count=candidate_message_count,
+        excluded_message_count=excluded_message_count,
+        source_count=source_count,
+        message_count=message_count,
+        contains_scrubbed_content=contains_scrubbed_content,
+        generated_sha256=generated_sha256,
+    )
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)

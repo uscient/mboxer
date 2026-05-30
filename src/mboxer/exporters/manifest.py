@@ -79,8 +79,8 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _safe_manifest_path(path: str | Path | None) -> str:
-    """Return a manifest-safe path reference without absolute local directories."""
+def safe_lineage_path(path: str | Path | None) -> str:
+    """Return a safe lineage path reference without absolute local directories."""
     if not path:
         return ""
     p = Path(path)
@@ -89,12 +89,87 @@ def _safe_manifest_path(path: str | Path | None) -> str:
     return p.as_posix()
 
 
+def _safe_manifest_path(path: str | Path | None) -> str:
+    return safe_lineage_path(path)
+
+
 def security_manifest_posture(config: dict[str, Any]) -> tuple[bool, dict[str, bool]]:
     security = config.get("security") or {}
     return (
         bool(security.get("scrub_enabled", True)),
         {key: bool(security.get(key, False)) for key in REDACTION_POLICY_KEYS},
     )
+
+
+def build_safe_export_run_metadata(
+    *,
+    export_kind: str,
+    account_key: str,
+    account_display_name: str | None,
+    account_email_address: str | None,
+    source_database_path: str | Path | None,
+    source_config_path: str | Path | None,
+    output_path: str | Path | None,
+    export_profile: str | None,
+    effective_profile: str,
+    security_profile: str | None,
+    scrub_enabled: bool,
+    redaction_policy: dict[str, Any],
+    export_format: dict[str, Any] | None = None,
+    candidate_message_count: int = 0,
+    excluded_message_count: int = 0,
+    source_count: int = 0,
+    message_count: int = 0,
+    contains_scrubbed_content: bool | None = None,
+    generated_sha256: str | None = None,
+    limit_profile: str | None = None,
+    limit_settings: dict[str, Any] | None = None,
+    split_strategy: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build safe export-run lineage metadata for local DB storage.
+
+    The exports table keeps local operational paths in dedicated columns. This
+    metadata is the safe lineage view and must not carry absolute local paths or
+    raw account email values.
+    """
+    output_ref = safe_lineage_path(output_path)
+    output_file = Path(output_path).name if output_path else ""
+    metadata: dict[str, Any] = {
+        "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
+        "tool_name": TOOL_NAME,
+        "tool_version": __version__,
+        "export_kind": export_kind,
+        "account_key": account_key,
+        "account_display_name": account_display_name or "",
+        "account_email_address": "",
+        "account_email_address_present": bool(account_email_address),
+        "source_database_present": bool(source_database_path),
+        "source_config_present": bool(source_config_path),
+        "source_database_path": safe_lineage_path(source_database_path),
+        "source_config_path": safe_lineage_path(source_config_path),
+        "output_path": output_ref,
+        "output_file": output_file,
+        "export_profile_override": export_profile or "",
+        "effective_default_export_profile": effective_profile,
+        "security_profile": security_profile or "",
+        "scrub_enabled": scrub_enabled,
+        "redaction_policy": redaction_policy,
+        "limit_profile": limit_profile or "",
+        "limit_settings": limit_settings or {},
+        "split_strategy": split_strategy or {},
+        "export_format": export_format or {},
+        "candidate_message_count": candidate_message_count,
+        "excluded_message_count": excluded_message_count,
+        "source_count": source_count,
+        "message_count": message_count,
+        "warnings": warnings or [],
+    }
+    if contains_scrubbed_content is not None:
+        metadata["contains_scrubbed_content"] = contains_scrubbed_content
+    if generated_sha256 is not None:
+        metadata["generated_sha256"] = generated_sha256
+    return metadata
 
 
 def _base_lineage_fields(
