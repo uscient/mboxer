@@ -6,14 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..security.policy import (
-    default_export_profile,
-    is_exportable,
-    metadata_only,
-    needs_scrub,
-    resolve_export_profile,
-)
-from ..security.scrub import scrub_text
+from ..security.policy import default_export_profile, resolve_export_profile
+from .projection import prepare_projection
 
 
 def export_jsonl(
@@ -33,7 +27,6 @@ def export_jsonl(
     include_classification = jsonl_config.get("include_classification", True)
     security = config.get("security") or {}
     config_default = default_export_profile(security.get("default_export_profile"))
-    scrub_enabled = security.get("scrub_enabled", True)
     security_profile = config_default
     effective_profile = resolve_export_profile(export_profile, config_default)
 
@@ -112,11 +105,19 @@ def export_jsonl(
 
             # Resolve export profile for this record
             per_record_profile = (classifications.get(record["id"]) or {}).get("export_profile")
-            requested_profile = export_profile or per_record_profile
-            effective = resolve_export_profile(requested_profile, config_default)
-            if not is_exportable(effective):
+            projected = prepare_projection(
+                record,
+                config,
+                override_profile=export_profile,
+                record_profile=per_record_profile,
+                clear_body_word_count_for_metadata_only=True,
+            )
+            if projected is None:
                 excluded_message_count += 1
                 continue
+            record = projected.record
+            if projected.was_scrubbed:
+                any_scrubbed = True
 
             record["account_key"] = account_key
             try:
@@ -128,17 +129,6 @@ def export_jsonl(
 
             if include_classification and record["id"] in classifications:
                 record["classification"] = classifications[record["id"]]
-
-            # Apply scrubbing or metadata-only
-            if scrub_enabled and needs_scrub(effective):
-                original = record.get("body_text") or ""
-                scrubbed = scrub_text(original, config)
-                if scrubbed != original:
-                    any_scrubbed = True
-                record["body_text"] = scrubbed
-            elif metadata_only(effective):
-                record["body_text"] = None
-                record["body_word_count"] = None
 
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1

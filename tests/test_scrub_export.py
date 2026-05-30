@@ -210,6 +210,59 @@ def _read_jsonl_bodies(out_path: Path) -> list[str | None]:
     return [json.loads(line).get("body_text") for line in out_path.read_text().splitlines()]
 
 
+def _read_jsonl_records(out_path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in out_path.read_text().splitlines()]
+
+
+def _classify_subject_profiles(db_path: Path, subject_profiles: dict[str, str]) -> None:
+    account_id = _get_account_id(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        for subject, export_profile in subject_profiles.items():
+            msg_id = conn.execute(
+                "SELECT id FROM messages WHERE subject = ?", (subject,)
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO classifications (account_id, message_db_id, target_type, "
+                "category_path, export_profile, sensitivity, classifier_type, confidence) "
+                "VALUES (?, ?, 'message', 'projection/characterization', ?, 'medium', 'rule', 1.0)",
+                (account_id, msg_id, export_profile),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_nlm_payload_text(out_dir: Path) -> str:
+    payloads: list[str] = []
+    for path in sorted(out_dir.rglob("*.md")):
+        text = path.read_text()
+        payloads.append(text.split("\n---\n\n", 1)[1])
+    return "\n".join(payloads)
+
+
+MIXED_PROFILE_CONFIG: dict[str, Any] = {
+    **BASE_CONFIG,
+    "security": {
+        "default_export_profile": "raw",
+        "scrub_enabled": True,
+        "redact_email_addresses": False,
+        "redact_phone_numbers": True,
+        "redact_ssn_like_numbers": True,
+        "redact_credit_card_like_numbers": True,
+    },
+    "exports": {"jsonl": {"include_classification": True}},
+}
+
+MIXED_PROFILE_SUBJECTS = {
+    "Phone test": "raw",
+    "SSN test": "scrubbed",
+    "Card test": "reviewed",
+    "Clean message": "metadata-only",
+    "Email in body test": "exclude",
+}
+
+
 # ── Export profile policy semantics ──────────────────────────────────────────
 
 def test_reviewed_profile_is_scrubbed_profile_label_not_review_proof():
@@ -349,6 +402,34 @@ def test_nlm_exclude_omits_record(tmp_path, db_pii):
     manifest = json.loads(Path(stats["manifest_json"]).read_text())
     assert all(row["candidate_message_count"] == 5 for row in manifest)
     assert all(row["excluded_message_count"] == 1 for row in manifest)
+
+
+def test_nlm_mixed_profile_projection_characterization(tmp_path, db_pii):
+    _classify_subject_profiles(db_pii, MIXED_PROFILE_SUBJECTS)
+
+    stats = _do_nlm_export(db_pii, tmp_path / "out", MIXED_PROFILE_CONFIG)
+    payload_text = _read_nlm_payload_text(tmp_path / "out")
+    manifest = json.loads(Path(stats["manifest_json"]).read_text())
+
+    assert stats["messages_exported"] == 4
+    assert stats["candidate_message_count"] == 5
+    assert stats["excluded_message_count"] == 1
+    assert all(row["candidate_message_count"] == 5 for row in manifest)
+    assert all(row["excluded_message_count"] == 1 for row in manifest)
+    assert any(row["contains_scrubbed_content"] for row in manifest)
+
+    assert PHONE_BODY in payload_text
+    assert "subject: SSN test" in payload_text
+    assert SSN_BODY not in payload_text
+    assert "[SSN REDACTED]" in payload_text
+    assert "subject: Card test" in payload_text
+    assert CARD_BODY not in payload_text
+    assert "[CARD REDACTED]" in payload_text
+    assert "subject: Clean message" in payload_text
+    assert CLEAN_BODY not in payload_text
+    assert "*(no body)*" in payload_text
+    assert "subject: Email in body test" not in payload_text
+    assert EMAIL_BODY not in payload_text
 
 
 # ── NotebookLM: email redaction config ───────────────────────────────────────
@@ -570,6 +651,52 @@ def test_jsonl_exclude_omits_record(tmp_path, db_pii):
     manifest = json.loads(Path(result["manifest_path"]).read_text())
     assert manifest[0]["candidate_message_count"] == 5
     assert manifest[0]["excluded_message_count"] == 1
+
+
+def test_jsonl_mixed_profile_projection_characterization(tmp_path, db_pii):
+    _classify_subject_profiles(db_pii, MIXED_PROFILE_SUBJECTS)
+
+    out = tmp_path / "test-account" / "messages.jsonl"
+    result = _do_jsonl_export(db_pii, out, MIXED_PROFILE_CONFIG)
+    records = _read_jsonl_records(out)
+    by_subject = {record["subject"]: record for record in records}
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+
+    assert result["messages_written"] == 4
+    assert result["candidate_message_count"] == 5
+    assert result["excluded_message_count"] == 1
+    assert manifest[0]["candidate_message_count"] == 5
+    assert manifest[0]["excluded_message_count"] == 1
+    assert manifest[0]["contains_scrubbed_content"] is True
+
+    assert set(by_subject) == {"Phone test", "SSN test", "Card test", "Clean message"}
+    assert by_subject["Phone test"]["body_text"] == f"{PHONE_BODY}\n"
+    assert by_subject["SSN test"]["body_text"] == "Your SSN on file is [SSN REDACTED].\n"
+    assert by_subject["Card test"]["body_text"] == "Charge to card [CARD REDACTED] is confirmed.\n"
+    assert by_subject["Clean message"]["body_text"] is None
+    assert by_subject["Clean message"]["body_word_count"] is None
+    assert "Email in body test" not in by_subject
+
+    assert list(records[0]) == [
+        "id",
+        "message_id",
+        "thread_key",
+        "subject",
+        "sender",
+        "date_utc",
+        "body_text",
+        "body_hash",
+        "body_chars",
+        "body_word_count",
+        "attachment_count",
+        "source_name",
+        "source_slug",
+        "account_key",
+        "recipients",
+        "cc",
+        "classification",
+    ]
+    assert records[0]["classification"]["export_profile"] == "raw"
 
 
 # ── JSONL: manifest contains_scrubbed_content ─────────────────────────────────

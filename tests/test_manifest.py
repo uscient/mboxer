@@ -510,7 +510,11 @@ def test_notebooklm_manifest_omits_attachment_contents(tmp_path):
         conn.close()
 
     manifest_text = Path(stats["manifest_json"]).read_text()
+    source_text = "\n".join(
+        path.read_text() for path in (tmp_path / "nlm_out" / "test-gmail").rglob("*.md")
+    )
     assert ATTACHMENT_PAYLOAD not in manifest_text
+    assert ATTACHMENT_PAYLOAD not in source_text
     assert str(attachments_dir) not in manifest_text
     assert "user@example.com" not in manifest_text
 

@@ -10,14 +10,8 @@ from typing import Any
 
 from ..limits import NotebookLMLimits
 from ..naming import category_to_directory, normalize_category_path, source_pack_filename
-from ..security.policy import (
-    default_export_profile,
-    is_exportable,
-    metadata_only,
-    needs_scrub,
-    resolve_export_profile,
-)
-from ..security.scrub import scrub_text
+from ..security.policy import default_export_profile, resolve_export_profile
+from .projection import prepare_projection
 
 
 def _date_band(date_utc: str | None) -> str:
@@ -161,25 +155,13 @@ def _prepare_records_for_export(
     When override_profile is set it applies to all records regardless of
     their per-record export_profile.
     """
-    security = config.get("security") or {}
-    config_default = default_export_profile(security.get("default_export_profile"))
-    scrub_enabled = security.get("scrub_enabled", True)
     result: list[dict[str, Any]] = []
     for rec in records:
-        requested_profile = override_profile or rec.get("export_profile")
-        effective = resolve_export_profile(requested_profile, config_default)
-        if not is_exportable(effective):
+        projected = prepare_projection(rec, config, override_profile=override_profile)
+        if projected is None:
             continue
-        rec = dict(rec)
-        was_scrubbed = False
-        if scrub_enabled and needs_scrub(effective):
-            original = rec.get("body_text") or ""
-            scrubbed = scrub_text(original, config)
-            was_scrubbed = scrubbed != original
-            rec["body_text"] = scrubbed
-        elif metadata_only(effective):
-            rec["body_text"] = None
-        rec["_was_scrubbed"] = was_scrubbed
+        rec = projected.record
+        rec["_was_scrubbed"] = projected.was_scrubbed
         result.append(rec)
     return result
 
