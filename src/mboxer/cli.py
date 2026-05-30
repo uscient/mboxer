@@ -469,6 +469,7 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
             account_key=account_key,
             account_display_name=account.get("display_name"),
             account_email_address=account.get("email_address"),
+            export_profile=args.export_profile,
             db_path=str(db_path),
             config_path=args.config,
         )

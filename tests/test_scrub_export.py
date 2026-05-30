@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import mailbox
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from mboxer.config import load_config
 from mboxer.db import init_db
 from mboxer.exporters.jsonl import export_jsonl
 from mboxer.exporters.notebooklm import export_notebooklm
+from mboxer.exporters.projection import prepare_projection
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import resolve_notebooklm_limits
 from mboxer.security.policy import needs_scrub, resolve_export_profile
@@ -202,6 +204,56 @@ def _do_jsonl_export(db_path, out_path, config, account_key="test-account", expo
         conn.close()
 
 
+def _run_jsonl_cli_export(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    out_path: Path,
+    *,
+    export_profile: str | None = None,
+    config_path: str | Path = "config/mboxer.example.yaml",
+) -> None:
+    from mboxer.cli import main as cli_main
+
+    argv = [
+        "mboxer",
+        "export",
+        "jsonl",
+        "--db",
+        str(db_path),
+        "--config",
+        str(config_path),
+        "--account",
+        "test-account",
+        "--out",
+        str(out_path),
+    ]
+    if export_profile:
+        argv.extend(["--export-profile", export_profile])
+    monkeypatch.setattr(sys, "argv", argv)
+    cli_main()
+
+
+def _write_raw_default_cli_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "raw-default.yaml"
+    config_path.write_text(
+        "\n".join([
+            "security:",
+            "  default_export_profile: raw",
+            "  scrub_enabled: true",
+            "  redact_email_addresses: false",
+            "  redact_phone_numbers: true",
+            "  redact_ssn_like_numbers: true",
+            "  redact_credit_card_like_numbers: true",
+            "exports:",
+            "  jsonl:",
+            "    include_classification: true",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def _read_md_bodies(out_dir: Path) -> str:
     return "\n".join(f.read_text() for f in out_dir.rglob("*.md"))
 
@@ -277,6 +329,63 @@ def test_invalid_default_profile_uses_safe_scrubbed_fallback():
 
 def test_missing_default_profile_uses_safe_scrubbed_fallback():
     assert resolve_export_profile(None, None) == "scrubbed"
+
+
+def test_prepare_projection_explicit_override_wins_over_record_profile():
+    record = {
+        "id": 1,
+        "body_text": PHONE_BODY,
+        "body_word_count": len(PHONE_BODY.split()),
+        "export_profile": "exclude",
+    }
+
+    projected = prepare_projection(
+        record,
+        SCRUB_CONFIG,
+        override_profile="metadata-only",
+        record_profile="exclude",
+        clear_body_word_count_for_metadata_only=True,
+    )
+
+    assert projected is not None
+    assert projected.effective_profile == "metadata-only"
+    assert projected.record["body_text"] is None
+    assert projected.record["body_word_count"] is None
+    assert record["body_text"] == PHONE_BODY
+
+
+@pytest.mark.parametrize("profile", ["raw", "reviewed", "scrubbed", "metadata-only", "exclude"])
+def test_prepare_projection_handles_all_export_profiles(profile):
+    record = {
+        "id": 1,
+        "body_text": PHONE_BODY,
+        "body_word_count": len(PHONE_BODY.split()),
+        "export_profile": profile,
+    }
+
+    projected = prepare_projection(
+        record,
+        SCRUB_CONFIG,
+        clear_body_word_count_for_metadata_only=True,
+    )
+
+    if profile == "exclude":
+        assert projected is None
+        return
+
+    assert projected is not None
+    assert projected.effective_profile == profile
+    if profile == "raw":
+        assert projected.record["body_text"] == PHONE_BODY
+        assert projected.was_scrubbed is False
+    elif profile == "metadata-only":
+        assert projected.record["body_text"] is None
+        assert projected.record["body_word_count"] is None
+        assert projected.was_scrubbed is False
+    else:
+        assert "555-867-5309" not in projected.record["body_text"]
+        assert "[PHONE REDACTED]" in projected.record["body_text"]
+        assert projected.was_scrubbed is True
 
 
 # ── NotebookLM: raw ───────────────────────────────────────────────────────────
@@ -730,6 +839,64 @@ def test_jsonl_manifest_security_profile_recorded(tmp_path, db_pii):
     result = _do_jsonl_export(db_pii, out, SCRUB_CONFIG)
     manifest = json.loads(Path(result["manifest_path"]).read_text())
     assert manifest[0]["security_profile"] == "scrubbed"
+
+
+# ── JSONL: CLI export_profile override ───────────────────────────────────────
+
+def test_jsonl_cli_export_profile_metadata_only(tmp_path, monkeypatch, db_pii):
+    out = tmp_path / "test-account" / "cli-meta.jsonl"
+    _run_jsonl_cli_export(
+        monkeypatch,
+        db_pii,
+        out,
+        export_profile="metadata-only",
+    )
+
+    records = _read_jsonl_records(out)
+    assert records
+    assert all(record["body_text"] is None for record in records)
+    assert all(record["body_word_count"] is None for record in records)
+
+
+def test_jsonl_cli_raw_override_preserves_body_only_when_requested(tmp_path, monkeypatch, db_pii):
+    default_out = tmp_path / "test-account" / "cli-default.jsonl"
+    _run_jsonl_cli_export(monkeypatch, db_pii, default_out)
+    default_text = " ".join(body for body in _read_jsonl_bodies(default_out) if body)
+
+    assert "555-867-5309" not in default_text
+    assert "[PHONE REDACTED]" in default_text
+
+    raw_out = tmp_path / "test-account" / "cli-raw.jsonl"
+    _run_jsonl_cli_export(
+        monkeypatch,
+        db_pii,
+        raw_out,
+        export_profile="raw",
+    )
+    raw_text = " ".join(body for body in _read_jsonl_bodies(raw_out) if body)
+
+    assert "555-867-5309" in raw_text
+    assert "[PHONE REDACTED]" not in raw_text
+
+
+def test_jsonl_cli_export_profile_scrubbed_applies_scrubbing(
+    tmp_path,
+    monkeypatch,
+    db_pii,
+):
+    config_path = _write_raw_default_cli_config(tmp_path)
+    out = tmp_path / "test-account" / "cli-scrubbed.jsonl"
+    _run_jsonl_cli_export(
+        monkeypatch,
+        db_pii,
+        out,
+        export_profile="scrubbed",
+        config_path=config_path,
+    )
+
+    text = " ".join(body for body in _read_jsonl_bodies(out) if body)
+    assert "555-867-5309" not in text
+    assert "[PHONE REDACTED]" in text
 
 
 # ── Account scoping ───────────────────────────────────────────────────────────
