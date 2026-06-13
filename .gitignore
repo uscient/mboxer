@@ -9,6 +9,7 @@ __pycache__/
 venv/
 dist/
 build/
+tmp/
 
 # Local config and data
 .env
