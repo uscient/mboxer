@@ -278,9 +278,9 @@ def test_output_path_truncates_overlong_extensionless_filename():
 
 
 @pytest.mark.integration
-def test_extract_duplicate_extensionless_names_do_not_overwrite(conn, make_msg, tmp_path):
-    """Essential contract: a second extensionless file with the same name must
-    not clobber the first. (The exact suffix format is left unspecified here.)"""
+def test_extract_duplicate_extensionless_names_get_suffixed(conn, make_msg, tmp_path):
+    """A second extensionless file with the same name is suffixed as 'name-1'
+    (not the former '-1.name'), and never clobbers the first."""
     msg = make_msg(attachments=[
         ("Makefile", b"one", "application/octet-stream"),
         ("Makefile", b"two", "application/octet-stream"),
@@ -289,10 +289,10 @@ def test_extract_duplicate_extensionless_names_do_not_overwrite(conn, make_msg, 
 
     rows = _extract(conn, msg, adir)
 
-    paths = [Path(r["storage_path"]) for r in rows]
-    assert paths[0] != paths[1]
-    assert paths[0].read_bytes() == b"one"
-    assert paths[1].read_bytes() == b"two"
+    names = [Path(r["storage_path"]).name for r in rows]
+    assert names == ["Makefile", "Makefile-1"]
+    assert Path(rows[0]["storage_path"]).read_bytes() == b"one"
+    assert Path(rows[1]["storage_path"]).read_bytes() == b"two"
 
 
 @pytest.mark.integration

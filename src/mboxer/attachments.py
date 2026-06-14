@@ -39,8 +39,8 @@ def _resolve_storage_path(
     candidate = dest_dir / safe_filename
     if not candidate.exists():
         return candidate
-    stem, _, ext = safe_filename.rpartition(".")
-    if not ext:
+    stem, sep, ext = safe_filename.rpartition(".")
+    if not sep:  # no '.' at all -> the whole name is the stem (rpartition puts it in `ext`)
         stem, ext = safe_filename, ""
     counter = 1
     while True:
