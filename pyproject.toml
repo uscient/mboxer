@@ -97,5 +97,6 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# Ratchet upward as gaps close; this is a floor, never the goal.
-fail_under = 92
+# Permanent CI-enforced gate, locked at the achieved level (94.33%). Coverage
+# may not regress below this on merge; raise it only when real gains are added.
+fail_under = 94
