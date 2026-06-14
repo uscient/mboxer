@@ -48,7 +48,8 @@ dev = [
   "ruff>=0.5.0",
   "mypy>=1.10",
   "types-PyYAML>=6.0.1",
-  "vulture>=2.6"
+  "vulture>=2.6",
+  "pytest-cov>=5.0"
 ]
 
 [project.urls]
@@ -74,3 +75,22 @@ python_version = "3.11"
 strict = false
 warn_unused_ignores = true
 warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --strict-config"
+testpaths = ["tests"]
+markers = [
+  "unit: fast, isolated tests with no DB or filesystem dependency",
+  "integration: exercises SQLite or the mbox->DB->export flow (real DB in tmp_path)",
+  "e2e: full CLI pipeline tests",
+  "slow: long-running; deselect with -m 'not slow'",
+]
+
+[tool.coverage.run]
+source = ["mboxer"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# Ratchet upward as gaps close; this is a floor, never the goal.
+fail_under = 83
