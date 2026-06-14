@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
+from ..security.detectors import active_detector_descriptors
 from ..security.policy import default_export_profile
 
 MANIFEST_SCHEMA_VERSION = "1"
@@ -17,7 +18,6 @@ REDACTION_POLICY_KEYS = (
     "redact_phone_numbers",
     "redact_ssn_like_numbers",
     "redact_credit_card_like_numbers",
-    "redact_physical_addresses",
 )
 
 MANIFEST_FIELDS = [
@@ -65,6 +65,11 @@ MANIFEST_FIELDS = [
     "export_format_json",
     "warnings_json",
     "created_at",
+    "residual_scan_performed",
+    "residual_findings_total",
+    "residual_findings_by_type_json",
+    "residual_findings_policy",
+    "detectors_json",
 ]
 
 
@@ -127,6 +132,11 @@ def build_safe_export_run_metadata(
     limit_settings: dict[str, Any] | None = None,
     split_strategy: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    residual_scan_performed: bool = False,
+    residual_findings_total: int = 0,
+    residual_findings_by_type: dict[str, int] | None = None,
+    residual_findings_policy: str = "warn",
+    detectors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build safe export-run lineage metadata for local DB storage.
 
@@ -166,6 +176,11 @@ def build_safe_export_run_metadata(
         "source_count": source_count,
         "message_count": message_count,
         "warnings": warnings or [],
+        "residual_scan_performed": residual_scan_performed,
+        "residual_findings_total": residual_findings_total,
+        "residual_findings_by_type": residual_findings_by_type or {},
+        "residual_findings_policy": residual_findings_policy,
+        "detectors": detectors if detectors is not None else active_detector_descriptors(),
     }
     if contains_scrubbed_content is not None:
         metadata["contains_scrubbed_content"] = contains_scrubbed_content
@@ -192,6 +207,11 @@ def _base_lineage_fields(
     export_format: dict[str, Any] | None,
     warnings: list[str] | None,
     created_at: str,
+    residual_scan_performed: bool,
+    residual_findings_total: int,
+    residual_findings_by_type: dict[str, int] | None,
+    residual_findings_policy: str,
+    detectors: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     safe_security_profile = default_export_profile(security_profile)
     effective_default = export_profile or safe_security_profile
@@ -220,6 +240,13 @@ def _base_lineage_fields(
         "export_format_json": _compact_json(export_format),
         "warnings_json": json.dumps(warnings or [], ensure_ascii=False, sort_keys=True),
         "created_at": created_at,
+        "residual_scan_performed": residual_scan_performed,
+        "residual_findings_total": residual_findings_total,
+        "residual_findings_by_type_json": _compact_json(residual_findings_by_type),
+        "residual_findings_policy": residual_findings_policy,
+        "detectors_json": _compact_json(
+            detectors if detectors is not None else active_detector_descriptors()
+        ),
     }
 
 
@@ -243,6 +270,11 @@ def build_notebooklm_manifest_rows(
     candidate_message_count: int = 0,
     excluded_message_count: int = 0,
     warnings: list[str] | None = None,
+    residual_scan_performed: bool = False,
+    residual_findings_total: int = 0,
+    residual_findings_by_type: dict[str, int] | None = None,
+    residual_findings_policy: str = "warn",
+    detectors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     base_fields = _base_lineage_fields(
         export_kind="notebooklm",
@@ -261,6 +293,11 @@ def build_notebooklm_manifest_rows(
         export_format=export_format,
         warnings=warnings,
         created_at=created_at,
+        residual_scan_performed=residual_scan_performed,
+        residual_findings_total=residual_findings_total,
+        residual_findings_by_type=residual_findings_by_type,
+        residual_findings_policy=residual_findings_policy,
+        detectors=detectors,
     )
     total_message_count = sum(int(stat.get("message_count", 0)) for stat in file_stats)
     total_file_count = len(file_stats)
@@ -317,6 +354,11 @@ def build_jsonl_manifest_rows(
     candidate_message_count: int = 0,
     excluded_message_count: int = 0,
     warnings: list[str] | None = None,
+    residual_scan_performed: bool = False,
+    residual_findings_total: int = 0,
+    residual_findings_by_type: dict[str, int] | None = None,
+    residual_findings_policy: str = "warn",
+    detectors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     base_fields = _base_lineage_fields(
         export_kind="jsonl",
@@ -335,6 +377,11 @@ def build_jsonl_manifest_rows(
         export_format=export_format,
         warnings=warnings,
         created_at=created_at,
+        residual_scan_performed=residual_scan_performed,
+        residual_findings_total=residual_findings_total,
+        residual_findings_by_type=residual_findings_by_type,
+        residual_findings_policy=residual_findings_policy,
+        detectors=detectors,
     )
     return [{
         **base_fields,

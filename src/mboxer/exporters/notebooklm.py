@@ -10,7 +10,8 @@ from typing import Any
 
 from ..limits import NotebookLMLimits
 from ..naming import category_to_directory, normalize_category_path, source_pack_filename
-from ..security.policy import default_export_profile, resolve_export_profile
+from ..security.findings import ResidualFindingsBlocked, merge_counts
+from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
 from .projection import prepare_projection
 
 
@@ -162,6 +163,7 @@ def _prepare_records_for_export(
             continue
         rec = projected.record
         rec["_was_scrubbed"] = projected.was_scrubbed
+        rec["_residual"] = projected.residual
         result.append(rec)
     return result
 
@@ -300,17 +302,28 @@ def export_notebooklm(
     config_path: str | None = None,
     warnings: list[str] | None = None,
     include_unclassified: bool = True,
+    findings_policy: str | None = None,
 ) -> dict[str, Any]:
     records = _fetch_classified_messages(conn, account_id)
     if include_unclassified:
         records += _fetch_unclassified_messages(conn, account_id)
 
     candidate_message_count = len(records)
+    warnings = list(warnings or [])
+    security = config.get("security") or {}
+    policy = resolve_findings_policy(security.get("on_residual_findings"), override=findings_policy)
     records = _prepare_records_for_export(records, config, export_profile)
     excluded_message_count = candidate_message_count - len(records)
+    residual_total: dict[str, int] = {}
+    for record in records:
+        merge_counts(residual_total, record.get("_residual") or {})
+    if policy == "block" and residual_total:
+        raise ResidualFindingsBlocked(residual_total)
+    if policy == "warn" and residual_total:
+        warnings.append(f"residual detected-sensitive items in export: {residual_total}")
+
     groups = _group_by_category_and_band(records)
     effective_budget = limits.effective_source_budget
-    security = config.get("security") or {}
     security_profile = default_export_profile(security.get("default_export_profile"))
     effective_profile = resolve_export_profile(export_profile, security_profile)
     notebooklm_config = (config.get("exports") or {}).get("notebooklm") or {}
@@ -323,6 +336,10 @@ def export_notebooklm(
         "candidate_message_count": candidate_message_count,
         "excluded_message_count": excluded_message_count,
         "warnings_count": len(warnings or []),
+        "warnings": warnings,
+        "residual_findings": residual_total,
+        "residual_findings_total": sum(residual_total.values()),
+        "residual_findings_policy": policy,
         "budget_used": 0,
         "dry_run": dry_run,
     }
@@ -387,6 +404,10 @@ def export_notebooklm(
                 file_count=len(all_file_stats),
                 message_count=stats["messages_exported"],
                 warnings=warnings,
+                residual_scan_performed=True,
+                residual_findings_total=stats["residual_findings_total"],
+                residual_findings_by_type=residual_total,
+                residual_findings_policy=policy,
             ),
             export_id,
         ),
@@ -418,6 +439,10 @@ def export_notebooklm(
         candidate_message_count=candidate_message_count,
         excluded_message_count=excluded_message_count,
         warnings=warnings,
+        residual_scan_performed=True,
+        residual_findings_total=stats["residual_findings_total"],
+        residual_findings_by_type=residual_total,
+        residual_findings_policy=policy,
     )
     csv_path, json_path = write_notebooklm_manifest(out_dir, account_key, manifest_rows)
 
@@ -445,6 +470,10 @@ def _export_metadata_json(
     file_count: int,
     message_count: int,
     warnings: list[str] | None,
+    residual_scan_performed: bool,
+    residual_findings_total: int,
+    residual_findings_by_type: dict[str, int],
+    residual_findings_policy: str,
 ) -> str:
     from .manifest import build_safe_export_run_metadata, security_manifest_posture
 
@@ -474,6 +503,10 @@ def _export_metadata_json(
         source_count=file_count,
         message_count=message_count,
         warnings=warnings,
+        residual_scan_performed=residual_scan_performed,
+        residual_findings_total=residual_findings_total,
+        residual_findings_by_type=residual_findings_by_type,
+        residual_findings_policy=residual_findings_policy,
     )
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 

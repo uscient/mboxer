@@ -120,13 +120,14 @@ security:
   default_export_profile: scrubbed
   scan_enabled: true
   scrub_enabled: true
+  on_residual_findings: warn  # allow | warn | block
   scan_attachments: true
   quarantine_unsafe_attachments: true
-  redact_email_addresses: false
+  redact_email_addresses: true
   redact_phone_numbers: true
   redact_ssn_like_numbers: true
   redact_credit_card_like_numbers: true
-  redact_physical_addresses: false
+  # reserved/planned detectors (not yet implemented): physical_addresses
 
 exports:
   notebooklm:
