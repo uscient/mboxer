@@ -93,4 +93,4 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 # Ratchet upward as gaps close; this is a floor, never the goal.
-fail_under = 88
+fail_under = 92
