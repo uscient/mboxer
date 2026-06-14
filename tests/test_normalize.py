@@ -1,4 +1,6 @@
 import email
+import json
+
 from mboxer.normalize import normalize_message, normalize_date, compute_body_hash
 
 
@@ -49,3 +51,21 @@ def test_normalize_message_html_fallback():
     msg = email.message_from_string(raw)
     record = normalize_message(msg, source_id=1, mbox_key="0")
     assert "Hello from HTML" in (record["body_text"] or "")
+
+
+def test_normalize_message_address_lists_are_lowercase_arrays():
+    raw = (
+        "From: Sender <SENDER@Example.COM>\r\n"
+        'To: "Recipient, One" <USER@Example.COM>, Team <TEAM@Example.ORG>\r\n'
+        "Cc: Undisclosed recipients:;\r\n"
+        'Bcc: "Hidden, Person" <HIDDEN@Example.NET>\r\n'
+        "Subject: Address invariant\r\n"
+        "\r\n"
+        "Body.\r\n"
+    )
+    msg = email.message_from_string(raw)
+    record = normalize_message(msg, source_id=1, mbox_key="0")
+
+    assert json.loads(record["recipients_json"]) == ["user@example.com", "team@example.org"]
+    assert json.loads(record["cc_json"]) == []
+    assert json.loads(record["bcc_json"]) == ["hidden@example.net"]

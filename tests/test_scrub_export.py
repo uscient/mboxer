@@ -803,6 +803,7 @@ def test_jsonl_mixed_profile_projection_characterization(tmp_path, db_pii):
         "account_key",
         "recipients",
         "cc",
+        "bcc",
         "classification",
     ]
     assert records[0]["classification"]["export_profile"] == "raw"

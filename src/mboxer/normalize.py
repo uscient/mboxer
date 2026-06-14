@@ -26,6 +26,7 @@ def _decode_header_value(value: str | None) -> str:
 
 
 def _parse_address_list(header_value: str | None) -> list[str]:
+    """Return bare lowercased addresses for one address-list header, preserving order."""
     if not header_value:
         return []
     addrs: list[str] = []

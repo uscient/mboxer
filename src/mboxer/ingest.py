@@ -13,6 +13,7 @@ from .config import deep_get, ensure_parent_dir
 from .db import init_db
 from .naming import slugify
 from .normalize import normalize_message
+from .records import loads_address_list
 
 
 class SourceIdentityError(RuntimeError):
@@ -409,7 +410,7 @@ def ingest_mbox(
                             raise RuntimeError("INSERT succeeded but cursor.lastrowid is None")
 
                         if record.get("thread_key"):
-                            participants = json.loads(record.get("recipients_json") or "[]")
+                            participants = loads_address_list(record["recipients_json"])
                             if record.get("sender"):
                                 participants = [record["sender"]] + participants
                             _upsert_thread(

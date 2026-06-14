@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 from .naming import normalize_category_path
+from .records import decode_address_fields
 
 
 def _load_rules(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -16,10 +17,7 @@ def _match_rule(rule: dict[str, Any], record: dict[str, Any]) -> bool:
     match = rule.get("match", {})
     sender = (record.get("sender") or "").lower()
     subject = (record.get("subject") or "").lower()
-    try:
-        recipients = json.loads(record.get("recipients_json") or "[]")
-    except Exception:
-        recipients = []
+    recipients = record["recipients"]
     all_addrs = [sender] + [r.lower() for r in recipients]
 
     for domain in match.get("from_domain", []):
@@ -112,7 +110,7 @@ def _build_thread_input(
 ) -> dict[str, Any]:
     """Aggregate thread messages into a single record suitable for rule matching."""
     if not messages:
-        return {"thread_key": thread_key, "subject": "", "sender": "", "recipients_json": "[]"}
+        return {"thread_key": thread_key, "subject": "", "sender": "", "recipients": []}
 
     subject = ""
     for m in messages:
@@ -128,17 +126,14 @@ def _build_thread_input(
             break
 
     # Collect all unique participant addresses across every message in the thread.
-    # Putting all of them into recipients_json ensures _match_rule's all_addrs covers
-    # every sender domain, not just the first message's sender.
+    # Putting all non-sender participants into recipients ensures _match_rule's
+    # all_addrs covers every sender domain, not just the first message's sender.
     all_addrs: set[str] = set()
     for m in messages:
         if m.get("sender"):
             all_addrs.add(m["sender"].lower())
-        try:
-            for r in json.loads(m.get("recipients_json") or "[]"):
-                all_addrs.add(r.lower())
-        except Exception:
-            pass
+        for r in m["recipients"]:
+            all_addrs.add(r.lower())
 
     sender = messages[0].get("sender") or ""
     other_addrs = sorted(all_addrs - {sender.lower()})
@@ -151,7 +146,7 @@ def _build_thread_input(
         "thread_key": thread_key,
         "subject": subject,
         "sender": sender,
-        "recipients_json": json.dumps(other_addrs),
+        "recipients": other_addrs,
         "_participants": sorted(all_addrs),
         "_excerpts": excerpts,
         "_message_count": len(messages),
@@ -330,8 +325,8 @@ def _run_rule_classification_thread(
         if account_id is not None:
             msg_rows = conn.execute(
                 """
-                SELECT id, subject, sender, recipients_json, date_utc, body_text,
-                       thread_key, account_id
+                SELECT id, subject, sender, recipients_json, cc_json, bcc_json,
+                       date_utc, body_text, thread_key, account_id
                 FROM messages
                 WHERE thread_key = ? AND account_id = ?
                 ORDER BY date_utc NULLS LAST, id
@@ -341,8 +336,8 @@ def _run_rule_classification_thread(
         else:
             msg_rows = conn.execute(
                 """
-                SELECT id, subject, sender, recipients_json, date_utc, body_text,
-                       thread_key, account_id
+                SELECT id, subject, sender, recipients_json, cc_json, bcc_json,
+                       date_utc, body_text, thread_key, account_id
                 FROM messages
                 WHERE thread_key = ?
                 ORDER BY date_utc NULLS LAST, id
@@ -351,10 +346,10 @@ def _run_rule_classification_thread(
             ).fetchall()
 
         cols = [
-            "id", "subject", "sender", "recipients_json", "date_utc",
-            "body_text", "thread_key", "account_id",
+            "id", "subject", "sender", "recipients_json", "cc_json", "bcc_json",
+            "date_utc", "body_text", "thread_key", "account_id",
         ]
-        messages = [dict(zip(cols, row)) for row in msg_rows]
+        messages = [decode_address_fields(dict(zip(cols, row))) for row in msg_rows]
         if not messages:
             continue
 
@@ -404,7 +399,7 @@ def run_rule_classification(
 
     query = """
         SELECT m.id, m.account_id, m.source_id, m.mbox_key, m.message_id, m.thread_key,
-               m.subject, m.sender, m.recipients_json, m.date_utc
+               m.subject, m.sender, m.recipients_json, m.cc_json, m.bcc_json, m.date_utc
         FROM messages m
         LEFT JOIN classifications c
           ON c.message_db_id = m.id AND c.classifier_type IN ('rule', 'rule_hint')
@@ -418,9 +413,9 @@ def run_rule_classification(
     rows = conn.execute(query, params).fetchall()
     cols = [
         "id", "account_id", "source_id", "mbox_key", "message_id", "thread_key",
-        "subject", "sender", "recipients_json", "date_utc",
+        "subject", "sender", "recipients_json", "cc_json", "bcc_json", "date_utc",
     ]
-    records = [dict(zip(cols, row)) for row in rows]
+    records = [decode_address_fields(dict(zip(cols, row))) for row in rows]
 
     classified = 0
     skipped = 0

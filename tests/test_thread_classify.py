@@ -154,14 +154,15 @@ def test_select_excerpts_max_chars():
 
 def test_build_thread_input_aggregates_participants():
     messages = [
-        {"subject": "Test", "sender": "a@example.com", "recipients_json": '["b@example.com"]',
+        {"subject": "Test", "sender": "a@example.com", "recipients": ["b@example.com"],
          "body_text": "hello", "date_utc": "2024-01-01T00:00:00"},
-        {"subject": "Re: Test", "sender": "b@example.com", "recipients_json": '["a@example.com"]',
+        {"subject": "Re: Test", "sender": "b@example.com", "recipients": ["a@example.com"],
          "body_text": "world", "date_utc": "2024-01-02T00:00:00"},
     ]
     result = _build_thread_input("tk1", messages)
     assert result["subject"] == "Test"
     assert result["sender"] == "a@example.com"
+    assert result["recipients"] == ["b@example.com"]
     all_participants = result["_participants"]
     assert "a@example.com" in all_participants
     assert "b@example.com" in all_participants
@@ -170,7 +171,7 @@ def test_build_thread_input_aggregates_participants():
 def test_build_thread_input_strips_re_prefix():
     messages = [
         {"subject": "Re: Re: Important notice", "sender": "s@x.com",
-         "recipients_json": "[]", "body_text": "", "date_utc": None},
+         "recipients": [], "body_text": "", "date_utc": None},
     ]
     result = _build_thread_input("tk2", messages)
     assert result["subject"] == "Important notice"
@@ -180,6 +181,7 @@ def test_build_thread_input_empty_messages():
     result = _build_thread_input("tk3", [])
     assert result["subject"] == ""
     assert result["sender"] == ""
+    assert result["recipients"] == []
 
 
 # ── Thread classification integration tests ───────────────────────────────────

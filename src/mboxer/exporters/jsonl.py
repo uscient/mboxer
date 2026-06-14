@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..records import decode_address_fields
 from ..security.findings import ResidualFindingsBlocked, merge_counts
 from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
 from .projection import prepare_projection
@@ -37,7 +38,7 @@ def export_jsonl(
         rows = conn.execute(
             """
             SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.recipients_json, m.cc_json, m.date_utc,
+                   m.recipients_json, m.cc_json, m.bcc_json, m.date_utc,
                    m.body_text, m.body_hash, m.body_chars, m.body_word_count,
                    m.attachment_count, s.source_name, s.source_slug
             FROM messages m
@@ -51,7 +52,7 @@ def export_jsonl(
         rows = conn.execute(
             """
             SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.recipients_json, m.cc_json, m.date_utc,
+                   m.recipients_json, m.cc_json, m.bcc_json, m.date_utc,
                    m.body_text, m.body_hash, m.body_chars, m.body_word_count,
                    m.attachment_count, s.source_name, s.source_slug
             FROM messages m
@@ -62,7 +63,7 @@ def export_jsonl(
 
     cols = [
         "id", "message_id", "thread_key", "subject", "sender",
-        "recipients_json", "cc_json", "date_utc",
+        "recipients_json", "cc_json", "bcc_json", "date_utc",
         "body_text", "body_hash", "body_chars", "body_word_count",
         "attachment_count", "source_name", "source_slug",
     ]
@@ -118,12 +119,7 @@ def export_jsonl(
             any_scrubbed = True
 
         record["account_key"] = account_key
-        try:
-            record["recipients"] = json.loads(record.pop("recipients_json") or "[]")
-            record["cc"] = json.loads(record.pop("cc_json") or "[]")
-        except Exception:
-            record["recipients"] = []
-            record["cc"] = []
+        record = decode_address_fields(record)
 
         if include_classification and record["id"] in classifications:
             record["classification"] = classifications[record["id"]]
