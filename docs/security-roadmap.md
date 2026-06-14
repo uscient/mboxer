@@ -21,7 +21,7 @@ exclude
   Do not export.
 ```
 
-## Future scan checks
+## Current scan checks
 
 Message checks:
 
@@ -29,6 +29,11 @@ Message checks:
 - phone numbers
 - SSN-like values
 - credit-card-like values
+
+## Future scan checks
+
+Reserved message detector names, not active claims:
+
 - postal addresses
 - medical terms
 - legal terms
@@ -63,3 +68,25 @@ The `security_findings` table should record:
 - excerpt or metadata
 - review status
 - created timestamp
+
+Implemented export support:
+
+- exports can be flagged with residual finding counts by type
+- exports can warn or block when projected export text still contains detected-sensitive items
+- export manifests and run metadata record residual counts, policy, and detector descriptors
+
+## Residual export gate
+
+`on_residual_findings` controls what happens after a record is projected for export and the
+projected body text is scanned again:
+
+- `allow`: write the export and record residual counts in manifest metadata
+- `warn`: write the export, record residual counts, and emit a counts-only warning
+- `block`: abort before export files or export rows are written when residual counts are non-empty
+
+The default is `warn`.
+
+The scanner runs through a deterministic in-process detector registry. The active registry currently
+contains regex detectors for email addresses, phone numbers, SSN-like values, and credit-card-like
+values. Physical-address, medical, legal, financial-account, and credential detectors are reserved
+future names, not active detection or scrubbing claims.

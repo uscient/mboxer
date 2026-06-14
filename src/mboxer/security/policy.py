@@ -2,6 +2,8 @@ from __future__ import annotations
 
 EXPORT_PROFILES = ("raw", "reviewed", "scrubbed", "metadata-only", "exclude")
 SAFE_DEFAULT_EXPORT_PROFILE = "scrubbed"
+FINDINGS_POLICIES = ("allow", "warn", "block")
+DEFAULT_FINDINGS_POLICY = "warn"
 
 
 def default_export_profile(config_default: str | None) -> str:
@@ -33,3 +35,8 @@ def needs_scrub(profile: str) -> bool:
 
 def metadata_only(profile: str) -> bool:
     return profile == "metadata-only"
+
+
+def resolve_findings_policy(config_value: str | None, override: str | None = None) -> str:
+    candidate = override or config_value
+    return candidate if candidate in FINDINGS_POLICIES else DEFAULT_FINDINGS_POLICY

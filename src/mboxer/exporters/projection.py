@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from ..security.findings import residual_finding_types
 from ..security.policy import (
     default_export_profile,
     is_exportable,
@@ -18,6 +19,7 @@ class ProjectionRecord:
     record: dict[str, Any]
     effective_profile: str
     was_scrubbed: bool
+    residual: dict[str, int] = field(default_factory=dict)
 
 
 def prepare_projection(
@@ -53,4 +55,5 @@ def prepare_projection(
         record=projected,
         effective_profile=effective,
         was_scrubbed=was_scrubbed,
+        residual=residual_finding_types(projected.get("body_text")),
     )

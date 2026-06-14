@@ -90,6 +90,7 @@ MESSAGES = [
 
 def build(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"")
     mbox = mailbox.mbox(str(dest), create=True)
     mbox.lock()
     try:
