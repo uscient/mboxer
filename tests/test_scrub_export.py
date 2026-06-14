@@ -893,6 +893,66 @@ def test_jsonl_cli_export_profile_scrubbed_applies_scrubbing(
     assert "[PHONE REDACTED]" in text
 
 
+# ── NotebookLM: CLI export_profile override (the CLI -> exporter seam) ─────────
+# The historical "JSONL CLI export profile pass-through" bug lived at the seam
+# between the CLI and the exporter, not inside either unit. The NotebookLM
+# exporter is exercised directly elsewhere; these tests drive the REAL CLI so a
+# dropped --export-profile in cmd_export_notebooklm would be caught.
+
+def _run_nlm_cli_export(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    out_dir: Path,
+    *,
+    export_profile: str | None = None,
+    config_path: str | Path = "config/mboxer.example.yaml",
+) -> None:
+    from mboxer.cli import main as cli_main
+
+    argv = [
+        "mboxer", "export", "notebooklm",
+        "--db", str(db_path),
+        "--config", str(config_path),
+        "--account", "test-account",
+        "--profile", "ultra_safe",
+        "--out", str(out_dir),
+    ]
+    if export_profile:
+        argv.extend(["--export-profile", export_profile])
+    monkeypatch.setattr(sys, "argv", argv)
+    cli_main()
+
+
+def test_nlm_cli_export_profile_metadata_only_drops_body(tmp_path, monkeypatch, db_pii):
+    out = tmp_path / "nlm-meta"
+    _run_nlm_cli_export(monkeypatch, db_pii, out, export_profile="metadata-only")
+
+    bodies = _read_md_bodies(out)
+    assert list(out.rglob("*.md"))           # files still written (metadata kept)
+    assert "555-867-5309" not in bodies      # body dropped...
+    assert "[PHONE REDACTED]" not in bodies  # ...not merely scrubbed (proves override, not the scrubbed default)
+
+
+def test_nlm_cli_raw_override_preserves_body_and_records_it(tmp_path, monkeypatch, db_pii):
+    # Default (example config -> scrubbed) redacts the phone.
+    default_out = tmp_path / "nlm-default"
+    _run_nlm_cli_export(monkeypatch, db_pii, default_out)
+    default_bodies = _read_md_bodies(default_out)
+    assert "555-867-5309" not in default_bodies
+    assert "[PHONE REDACTED]" in default_bodies
+
+    # --export-profile raw must propagate through cmd_export_notebooklm and show the body.
+    raw_out = tmp_path / "nlm-raw"
+    _run_nlm_cli_export(monkeypatch, db_pii, raw_out, export_profile="raw")
+    raw_bodies = _read_md_bodies(raw_out)
+    assert "555-867-5309" in raw_bodies
+    assert "[PHONE REDACTED]" not in raw_bodies
+
+    # ...and the manifest records the override that drove it.
+    manifest = json.loads((raw_out / "test-account" / "manifest.json").read_text())
+    assert any(row.get("export_profile_override") == "raw" for row in manifest)
+
+
 # ── Account scoping ───────────────────────────────────────────────────────────
 
 def test_scrub_is_account_scoped(tmp_path):
