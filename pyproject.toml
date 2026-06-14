@@ -79,7 +79,10 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-markers --strict-config"
+# Deterministic order by default (reproducible local runs + stable golden). Opt
+# into random order with `pytest -p randomly`; pytest-randomly prints the seed
+# ("Using --randomly-seed=...") so any order-dependent failure is reproducible.
+addopts = "-q -p no:randomly --strict-markers --strict-config"
 testpaths = ["tests"]
 markers = [
   "unit: fast, isolated tests with no DB or filesystem dependency",
