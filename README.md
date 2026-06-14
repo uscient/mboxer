@@ -43,22 +43,23 @@ Instead of uploading one giant raw archive, `mboxer` creates structured source p
 
 ```text
 exports/notebooklm/
-  finance/
-    invoices/
-      2024/
-        finance-invoices-2024-001.md
-  legal/
-    contracts/
-      2023-2024/
-        legal-contracts-2023-2024-001.md
-  projects/
-    product-launch/
-      2026/
-        projects-product-launch-2026-001.md
-  operations/
-    vendor-correspondence/
-      2025/
-        operations-vendor-correspondence-2025-001.md
+  primary-gmail/                 # output is nested under the account key
+    finance/
+      invoices/
+        2024/
+          finance-invoices-2024-001.md
+    legal/
+      contracts/
+        2023-2024/
+          legal-contracts-2023-2024-001.md
+    projects/
+      product-launch/
+        2026/
+          projects-product-launch-2026-001.md
+    operations/
+      vendor-correspondence/
+        2025/
+          operations-vendor-correspondence-2025-001.md
 ```
 
 The goal is to make exported Gmail content easier to:
@@ -89,7 +90,8 @@ Each exported file preserves useful email context:
 - attachment references
 
 Export output is split by category, year, and size band to respect NotebookLM source limits.
-A JSON manifest is written alongside each export run.
+A CSV manifest (`manifest.csv`) and JSON manifest (`manifest.json`) are written under
+`<out>/<account-key>/` for each export run.
 
 ### SQLite database
 
@@ -115,7 +117,8 @@ The schema tracks:
 JSONL is intended for RAG pipelines, embeddings, local LLM tools, and structured downstream processing.
 
 Each line represents one message with clean body text, metadata, and classification context.
-Account key is injected into the output path automatically to keep multi-account exports separated.
+Account key is injected into the output path automatically to keep multi-account exports separated,
+and a `<name>.manifest.json` is written alongside the JSONL file.
 
 ### External API/import handoff
 
@@ -125,7 +128,9 @@ NotebookLM Markdown and JSONL remain standalone outputs. Optional raw custody ha
 
 ### CSV exports
 
-CSV export is planned for spreadsheet review, filtering, auditing, and manual cleanup.
+A row-per-message CSV export (for spreadsheet review, filtering, auditing, and manual cleanup) is
+planned and not yet implemented. Note that export **manifests** are already written as CSV today
+(`manifest.csv`); the planned feature is a separate CSV export of message data itself.
 
 ## Current implementation status
 
@@ -147,14 +152,16 @@ Implemented:
 - category taxonomy with locked categories and proposal workflow
 - category review, approval, and rejection via CLI
 - security scan and scrub hooks
+- five export content profiles: `raw`, `reviewed`, `scrubbed`, `metadata-only`, `exclude`
+- residual-findings export gate (`allow` / `warn` / `block`) that re-scans projected export text
 - NotebookLM Markdown export with category directories, year bands, and size-limit profiles
 - export dry-run mode
 - JSONL export
-- JSON export manifests
+- CSV + JSON export manifests with provenance/lineage fields
 - five NotebookLM limit profiles: `standard`, `plus`, `pro`, `ultra`, `ultra_safe`
 - CLI with subcommands for all pipeline stages
-- YAML config loading with deep key access and environment variable support
-- `pyproject.toml` packaging with optional `pdf` and `dev` extras
+- YAML config loading with deep (dotted) key access
+- `pyproject.toml` packaging with an optional `dev` extra; version derived from git tags via setuptools-scm
 
 In progress / planned:
 
@@ -172,7 +179,9 @@ Python package:    mboxer
 CLI command:       mboxer
 Default database:  var/mboxer.sqlite
 Entry point:       mboxer.cli:main
-Python requires:   >=3.11
+Module entry:      python -m mboxer
+Python requires:   >=3.11 (tested on 3.11 and 3.12)
+Versioning:        git tags via setuptools-scm
 ```
 
 ## Source layout
@@ -189,18 +198,22 @@ src/mboxer/
   attachments.py      # attachment extraction and storage
   limits.py           # NotebookLM limit profiles and validation
   naming.py           # slugify and category path normalization
+  records.py          # row/address decoding helpers
   db/
-    schema.sql        # full SQLite schema
-    schema.py         # init_db helper
-    migrations/       # future migration scripts
+    schema.sql        # reference schema snapshot (validated in CI)
+    schema.py         # init_db: applies versioned migrations
+    migrations/       # versioned schema migrations (the DB is built from these)
   exporters/
     notebooklm.py     # Markdown source pack exporter
     jsonl.py          # JSONL exporter
-    manifest.py       # JSON manifest writer
+    projection.py     # applies export content profile to each record
+    manifest.py       # CSV + JSON manifest writer
   security/
     scan.py           # security scan runner
     scrub.py          # scrub hooks
-    policy.py         # export policy helpers
+    detectors.py      # regex detector registry
+    findings.py       # residual-findings export gate
+    policy.py         # export profile / findings policy helpers
 
 config/
   mboxer.example.yaml   # full annotated config example
@@ -239,6 +252,10 @@ Copy and customize the example config:
 ```bash
 cp config/mboxer.example.yaml config/mboxer.yaml
 ```
+
+> Tip: if you omit `--config`, `mboxer` falls back to the bundled `config/mboxer.example.yaml`, so
+> the commands below run out of the box for a first look. Copy it to `config/mboxer.yaml` and edit
+> that copy for real use.
 
 ## First run
 
@@ -391,6 +408,40 @@ mboxer export jsonl \
   --out exports/rag/messages.jsonl
 ```
 
+## Configuration and global flags
+
+Every command accepts two global flags:
+
+- `--config PATH` — path to your YAML config. If omitted, `mboxer` falls back to the bundled
+  `config/mboxer.example.yaml`.
+- `--db PATH` — override the SQLite database path. Otherwise the path comes from `paths.database`
+  (then `project.default_database`) in config, defaulting to `var/mboxer.sqlite`.
+
+The annotated `config/mboxer.example.yaml` is the reference for every available key: ingest batch
+size, classification rules, locked taxonomy, security/redaction policy, NotebookLM limit profiles,
+and JSONL options. Config values are read with dotted-path access; there is currently no
+environment-variable support.
+
+### Account commands
+
+```bash
+mboxer account add <key> --display-name "..." --email you@example.com [--provider gmail] [--notes "..."]
+mboxer account list
+mboxer account show <key>
+mboxer account update <key> [--display-name "..."] [--email ...] [--notes "..."]
+```
+
+When exactly one account exists it is auto-selected (with a notice). When more than one exists,
+account-scoped commands require `--account <key>` (or `--accounts key1,key2` for a combined
+NotebookLM export).
+
+### Useful ingest flags
+
+- `--resume` — restart an interrupted ingest from its last checkpoint.
+- `--extract-attachments` — extract attachments to `data/attachments/` with SHA-256 + content type.
+- `--create-account` — create the `--account` key on the fly if it does not exist yet.
+- `--force` — reprocess messages even if already present.
+
 ## Multi-account support
 
 `mboxer` supports multiple separate Gmail accounts and archives in the same local project.
@@ -438,9 +489,22 @@ research-literature-review-2024-001.md
 support-customer-requests-2025-001.md
 ```
 
-## Export profiles
+## Profiles: two independent controls
 
-NotebookLM limit profiles are defined in `config/mboxer.example.yaml`.
+`mboxer` has **two** different "profile" settings on `export notebooklm`, and they do different
+things:
+
+| CLI flag | What it controls | Allowed values |
+|---|---|---|
+| `--profile` | NotebookLM **size limits** (how many source files, how big) | `standard`, `plus`, `pro`, `ultra`, `ultra_safe` |
+| `--export-profile` | **Content** posture (how much of each message is exported) | `raw`, `reviewed`, `scrubbed`, `metadata-only` |
+
+They are covered separately below.
+
+## NotebookLM limit profiles (`--profile`)
+
+Limit profiles bound how many source files an export produces and how large each one gets.
+They are defined in `config/mboxer.example.yaml`.
 
 | Profile | Max sources | Reserved | Target sources | Target words/source |
 |---|---|---|---|---|
@@ -452,7 +516,7 @@ NotebookLM limit profiles are defined in `config/mboxer.example.yaml`.
 
 Use `ultra_safe` as the default for large NotebookLM-oriented workflows where you want to preserve headroom for manual sources, attachments, PDFs, and later additions.
 
-Limit overrides can be passed directly on the CLI:
+Any field of the selected limit profile can be overridden on the CLI:
 
 ```bash
 mboxer export notebooklm \
@@ -460,6 +524,43 @@ mboxer export notebooklm \
   --max-sources 400 \
   --target-words 200000
 ```
+
+Full set of limit overrides: `--max-sources`, `--reserved-sources`, `--target-sources`,
+`--target-words`, `--max-words`, `--target-mb`, `--max-mb`. Two escape hatches relax the
+built-in guardrails:
+
+- `--allow-full-source-budget` — allow the export to use the full `max_sources` budget
+  (ignore `reserved_sources` headroom).
+- `--force` — override the 200 MB per-source safety ceiling.
+
+## Export content profiles (`--export-profile`)
+
+Content profiles decide how much of each message body actually leaves the database. Every message
+gets an effective profile from its classification rule (`export_profile:` in a rule) or, failing
+that, from `security.default_export_profile` (the example config uses `scrubbed`).
+
+| Profile | Effect on the exported body |
+|---|---|
+| `raw` | Full body text, unchanged. Local use only. |
+| `reviewed` | Treated like `scrubbed` today: redaction passes are applied. |
+| `scrubbed` | Sensitive patterns redacted per `security.redact_*` policy. |
+| `metadata-only` | Body text dropped; only headers/metadata are exported. |
+| `exclude` | Message is omitted from the export entirely. |
+
+`--export-profile` overrides the effective profile for a whole run, but only accepts
+`raw`, `reviewed`, `scrubbed`, or `metadata-only`. `exclude` is **not** a CLI choice — it is applied
+per message through classification rules or config, so that "do not export" stays a governed,
+per-category decision rather than a global switch.
+
+### Residual-findings gate (`--findings-policy`)
+
+After a record is projected for export, the projected text is scanned again. `--findings-policy`
+(default from `security.on_residual_findings`, which the example config sets to `warn`) controls what
+happens if detected-sensitive patterns survive:
+
+- `allow` — write the export; record residual counts in the manifest.
+- `warn` — write the export, record counts, and print a counts-only warning.
+- `block` — abort **before any files are written**; the command exits with status `2`.
 
 ## Classification strategy
 
@@ -532,20 +633,29 @@ ingest
   → export
 ```
 
-The config controls which redaction passes are applied before export:
+The `security` config block controls the default content posture, the residual-findings gate, and
+which redaction passes run before export:
 
 ```yaml
 security:
+  default_export_profile: scrubbed       # fallback content profile when no rule sets one
+  scan_enabled: true
+  scrub_enabled: true
+  on_residual_findings: warn             # allow | warn | block (maps to --findings-policy)
+  scan_attachments: true
+  quarantine_unsafe_attachments: true
+  redact_email_addresses: true
   redact_phone_numbers: true
   redact_ssn_like_numbers: true
   redact_credit_card_like_numbers: true
-  redact_email_addresses: false
-  redact_physical_addresses: false
-  scan_attachments: true
-  quarantine_unsafe_attachments: true
+  # physical_addresses is a reserved/planned detector name, not active today
 ```
 
-Cloud-oriented exports should use reviewed, scrubbed, or metadata-only profiles.
+Detection today is a deterministic in-process **regex** registry covering email addresses, phone
+numbers, SSN-like values, and credit-card-like values. Physical-address, medical, legal, and
+credential detectors are reserved future names, not active detection or scrubbing.
+
+Cloud-oriented exports should use `reviewed`, `scrubbed`, or `metadata-only` content profiles.
 
 ## Development
 
@@ -562,10 +672,11 @@ ruff check src/
 mypy src/
 ```
 
-Optional PDF support:
+CI (`.github/workflows/ci.yml`) runs ruff and mypy on Python 3.11 and the test suite on Python 3.11
+and 3.12. Test fixtures are synthetic; regenerate them with:
 
 ```bash
-pip install -e ".[pdf]"
+python tests/fixtures/make_synthetic.py
 ```
 
 ## Design goals
@@ -596,22 +707,59 @@ pip install -e ".[pdf]"
 - a black-box AI classifier
 - a cloud-first archive processor
 
+## Troubleshooting / FAQ
+
+**`Config file not found: config/mboxer.yaml`**
+You passed `--config config/mboxer.yaml` but never created it. Copy the example
+(`cp config/mboxer.example.yaml config/mboxer.yaml`) or drop `--config` to use the bundled example.
+
+**`<command> requires --account when multiple accounts exist`**
+More than one account is registered. Pass `--account <key>`; list keys with `mboxer account list`.
+
+**`Unknown NotebookLM profile 'x'. Available: ...`**
+`--profile` must be one of `standard`, `plus`, `pro`, `ultra`, `ultra_safe` (or a profile you added
+under `exports.notebooklm.profiles`).
+
+**`effective source budget is zero; reduce reserved_sources`**
+`reserved_sources` is greater than or equal to `max_sources` for the chosen profile. Lower it, or
+pass `--allow-full-source-budget`.
+
+**`max_bytes_per_source exceeds 200 MB safety limit; pass --force to override`**
+A per-source byte limit above 200 MB is rejected by default. Pass `--force` only if you really intend
+sources that large.
+
+**`BLOCKED: would export residual detected-sensitive items ...` (exit code 2)**
+Your findings policy is `block` and the projected export text still contains detected-sensitive
+patterns. Scrub/redact further, move the affected categories to `metadata-only`/`exclude`, or rerun
+with `--findings-policy warn` (or `allow`) if that is acceptable for the run.
+
+**`mboxer: command not found`**
+Activate the virtualenv and install the package: `source .venv/bin/activate && pip install -e .`.
+
+**Ingesting a full archive is slow or huge.**
+Expected — Gmail archives can be many GB. Slice a small `.mbox` first, use `--resume`, and validate
+shape with `mboxer export notebooklm --dry-run` before a real export.
+
+**Does classification use an LLM?**
+Not yet. Classification is deterministic rule matching today. The Ollama config block and the
+`classify --model` flag exist, but LLM classification is not wired into the pipeline (the flag prints
+a "not yet implemented" notice).
+
 ## Releases
 
-Releases are automated via `.github/workflows/release.yml`.
+The package version is derived from git tags by `setuptools-scm` — there is no hand-edited version
+string in `pyproject.toml`. The most recent `vX.Y.Z` tag determines the version of a build.
 
-On every push to `master` (which is effectively every merged PR when branch protection requires PR-only changes), the workflow:
+Publishing is **manual and tag/release-driven**:
 
-1. Finds the highest existing `v*` tag (by semantic version order).
-2. Increments its **patch** component to produce the next version.  If no prior `v*` tag exists, starts from `v0.1.0`.
-3. Creates and pushes the new tag.
-4. Publishes a GitHub Release from that tag with autogenerated release notes.
+1. Push a semantic-version tag, e.g. `git tag v0.2.0 && git push origin v0.2.0`.
+2. Create a GitHub Release for that tag.
+3. Publishing the GitHub Release triggers `.github/workflows/publish.yml`, which builds the sdist
+   and wheel (`python -m build`) and uploads them to PyPI using trusted publishing (OIDC, the `pypi`
+   environment) — no API token is stored in the repo.
 
-**Assumptions and caveats:**
-
-- Only the patch component is bumped automatically. To release a minor or major version, push the tag manually before merging to `master`.
-- The workflow runs on any direct push to `master`, not only merged PRs. If direct pushes are enabled, each push creates a new release.
-- The automated tag is pushed using `GITHUB_TOKEN`. Due to a GitHub Actions limitation, tag pushes made by `GITHUB_TOKEN` do **not** re-trigger other workflows. This means the `build-and-publish` (PyPI) job in the same file will not run automatically for auto-created tags; PyPI publishing requires a manually pushed `v*.*.*` tag.
+There is no automatic patch-bump-on-merge workflow; choosing the next version number is a deliberate
+step you take when you tag a release.
 
 ## License
 
