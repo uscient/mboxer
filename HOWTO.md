@@ -1,84 +1,145 @@
 # How to Use mboxer
 
-`mboxer` converts raw Gmail MBOX exports into organized, structured Markdown files optimized for NotebookLM. This guide walks you through the complete end-to-end workflow.
+`mboxer` converts raw Gmail MBOX exports into organized, structured Markdown source packs for
+NotebookLM (plus JSONL for RAG). This is the friendly step-by-step walkthrough; see `README.md` for
+the full reference and `docs/` for design detail.
+
+Every command below passes `--config config/mboxer.yaml`. If you omit `--config`, `mboxer` falls
+back to the bundled `config/mboxer.example.yaml`, so you can try the tool before writing your own
+config.
 
 ## Phase 1: Preparation
 
-### 1. Get Your Gmail MBOX File
+### 1. Install mboxer
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+mboxer --help
+```
+
+### 2. Get your Gmail MBOX file
 
 1. Go to Google Takeout and request an export of your Gmail data.
+2. Download and extract the archive, then locate the `.mbox` file.
 
-2. Download and extract the generated archive to locate the `.mbox` file.
+> **Test with a small MBOX before ingesting large archives.**
+> Gmail exports can exceed several gigabytes. Slice a small `.mbox` and ingest that first, run an
+> export `--dry-run` to verify the output shape, and review the generated files locally before
+> uploading anything to a cloud service.
 
-**Warning: Test with a small MBOX before ingesting large archives.**
-Gmail MBOX exports can exceed several gigabytes for long-lived accounts. Before ingesting a full archive:
+### 3. Configure mboxer
 
-1. Extract a small slice of messages into a separate `.mbox` file and ingest that first.
+```bash
+cp config/mboxer.example.yaml config/mboxer.yaml
+```
 
-2. Run `mboxer export notebooklm --dry-run` to verify the output shape.
+Edit `config/mboxer.yaml` to set your limit profile, locked taxonomy, classification rules, and
+security/redaction policy.
 
-3. Review the generated exports locally before uploading anything to a cloud service.
+## Phase 2: The core pipeline
 
-### 2. Configure mboxer
+### 1. Initialize the database
 
-Copy the example configuration file:
+Create (or migrate) the local SQLite index that holds all durable state.
 
-    cp config/mboxer.example.yaml config/mboxer.yaml
+```bash
+mboxer init-db --config config/mboxer.yaml
+```
 
-Customize `config/mboxer.yaml` to define your limits, categories, and classification rules.
+### 2. Register your account
 
-## Phase 2: The Core Pipeline
+`mboxer` keeps accounts separate. Add one before ingesting.
 
-Complete walkthrough from a fresh checkout to export:
+```bash
+mboxer account add primary-gmail \
+  --display-name "Primary Gmail" \
+  --email you@example.com \
+  --config config/mboxer.yaml
+```
 
-### 1. Initialize the Database
+Confirm it with `mboxer account list --config config/mboxer.yaml`.
 
-Set up the local SQLite database that acts as the durable project index.
+### 3. Ingest the MBOX file
 
-    mboxer init
+The path to the `.mbox` is a positional argument; the human-readable label is `--source-name`.
 
-### 2. Register Your Account
+```bash
+mboxer ingest data/mboxes/primary-gmail/sample.mbox \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --source-name "Sample" \
+  --extract-attachments \
+  --resume
+```
 
-`mboxer` supports multi-account separation. Register your account key first.
+`--resume` makes ingest restartable from its last checkpoint. Add `--create-account` to create the
+account key inline if you skipped step 2.
 
-    mboxer register --account your_account_key
+### 4. Classify with rules
 
-### 3. Ingest the MBOX File
+Assign categories, sensitivities, and export profiles deterministically. Defaults to thread level
+with inheritance down to messages.
 
-Load your `.mbox` file into the local database.
+```bash
+mboxer classify --config config/mboxer.yaml --account primary-gmail --level thread
+```
 
-    mboxer ingest --account your_account_key --source your_mbox_file.mbox --resume
+### 5. Review categories
 
-*Note: The `--resume` flag makes the ingest restartable using per-run checkpoint keys, but a full ingest still takes significant time and disk space.*
+The classifier can propose new categories. Review counts and pending proposals, then approve or
+reject before they are used in exports.
 
-### 4. Classify with Rules
+```bash
+mboxer review-categories --config config/mboxer.yaml --account primary-gmail
+mboxer approve-category <proposal_id>
+mboxer reject-category <proposal_id>
+```
 
-Run the classification engine. This assigns categories, sensitivities, and export profiles at both the message and thread levels.
+### 6. Run a security scan
 
-    mboxer classify
+Run the local regex sensitivity scan (email, phone, SSN-like, credit-card-like) and record findings.
 
-### 5. Review Categories
-
-The classifier can propose new categories. You must explicitly review, approve, or reject these proposals before they are used in exports.
-
-    mboxer review-categories
-
-### 6. Run a Security Scan
-
-Apply redaction passes and security scan hooks.
-
-    mboxer scan
+```bash
+mboxer security-scan --config config/mboxer.yaml --account primary-gmail
+```
 
 ## Phase 3: Export
 
-### 1. Dry-Run Export
+### 1. Dry-run export
 
-Verify the output shape, category directories, and size limits without writing massive amounts of data. Running `--dry-run` on exports is free and fast.
+Verify the output shape, category directories, and size splitting without writing the full output.
+A dry run is free and fast.
 
-    mboxer export notebooklm --dry-run
+```bash
+mboxer export notebooklm \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --profile ultra_safe \
+  --dry-run
+```
 
-### 2. Real Export
+### 2. Real export
 
-Generate the Markdown source packs for NotebookLM, or JSONL for RAG pipelines.
+```bash
+mboxer export notebooklm \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --profile ultra_safe \
+  --out exports/notebooklm
+```
 
-    mboxer export notebooklm
+Output (and a `manifest.csv` + `manifest.json`) is written under `exports/notebooklm/<account-key>/`.
+
+### 3. JSONL for RAG (optional)
+
+```bash
+mboxer export jsonl \
+  --config config/mboxer.yaml \
+  --account primary-gmail \
+  --out exports/rag/messages.jsonl
+```
+
+The account key is inserted into the output path automatically, so this lands at
+`exports/rag/primary-gmail/messages.jsonl` with a `messages.manifest.json` beside it.
