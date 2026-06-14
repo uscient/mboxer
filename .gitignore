@@ -39,3 +39,8 @@ exports/manifests/*
 
 # Claude Code local permissions/config
 .claude/settings.local.json
+
+# One-off temporary helper scripts
+# (The canonical version lives under tmp/, which is already ignored.
+#  Explicitly ignore root-level copies to prevent accidental tracking.)
+install.sh
