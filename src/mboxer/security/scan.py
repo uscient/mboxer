@@ -1,30 +1,13 @@
 from __future__ import annotations
 
-import re
 import sqlite3
 from typing import Any
 
-_PATTERNS = {
-    "email_address": re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"),
-    "phone_number": re.compile(r"\b(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b"),
-    "ssn_like": re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b"),
-    "credit_card_like": re.compile(r"\b(?:\d{4}[\s\-]){3}\d{4}\b"),
-}
+from .detectors import run_detectors
 
 
 def scan_text(text: str) -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
-    for finding_type, pattern in _PATTERNS.items():
-        matches = pattern.findall(text)
-        if matches:
-            findings.append({
-                "finding_type": finding_type,
-                "severity": "medium",
-                "detector": "regex",
-                "excerpt": matches[0][:100],
-                "count": len(matches),
-            })
-    return findings
+    return run_detectors(text)
 
 
 def _insert_finding_once(

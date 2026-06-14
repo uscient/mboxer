@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 
 from .accounts import AccountError
@@ -137,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_nlm.add_argument("--out", default=None)
     p_nlm.add_argument("--export-profile",
                        choices=["raw", "reviewed", "scrubbed", "metadata-only"], default=None)
+    p_nlm.add_argument("--findings-policy", choices=["allow", "warn", "block"], default=None)
     p_nlm.add_argument("--profile", default=None, help="NotebookLM limit profile")
     p_nlm.add_argument("--max-sources", type=int)
     p_nlm.add_argument("--reserved-sources", type=int)
@@ -156,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_jsonl.add_argument("--out", default=None)
     p_jsonl.add_argument("--export-profile",
                          choices=["raw", "reviewed", "scrubbed", "metadata-only"], default=None)
+    p_jsonl.add_argument("--findings-policy", choices=["allow", "warn", "block"], default=None)
     p_jsonl.set_defaults(func=cmd_export_jsonl)
 
     return parser
@@ -369,6 +372,7 @@ def cmd_security_scan(args: argparse.Namespace) -> None:
 def cmd_export_notebooklm(args: argparse.Namespace) -> None:
     from .accounts import resolve_account
     from .exporters.notebooklm import export_notebooklm
+    from .security.findings import ResidualFindingsBlocked
     config, db_path = load_runtime(args)
     limits = resolve_notebooklm_limits(
         config, args.profile,
@@ -430,10 +434,20 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
                 db_path=str(db_path),
                 config_path=args.config,
                 warnings=warnings,
+                findings_policy=args.findings_policy,
             )
+        except ResidualFindingsBlocked as exc:
+            print(
+                f"BLOCKED: would export residual detected-sensitive items {exc.counts}; "
+                "no files written.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
         finally:
             conn.close()
 
+        for warning in stats.get("warnings", [])[len(warnings):]:
+            print(f"WARNING: {warning}")
         if args.dry_run:
             print(f"  [{account['account_key']}] Dry run: {stats.get('groups', 0)} "
                   f"category/band groups would become source files.")
@@ -445,6 +459,7 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
 def cmd_export_jsonl(args: argparse.Namespace) -> None:
     from .accounts import resolve_account
     from .exporters.jsonl import export_jsonl
+    from .security.findings import ResidualFindingsBlocked
     config, db_path = load_runtime(args)
     conn = open_db(db_path)
     try:
@@ -472,9 +487,19 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
             export_profile=args.export_profile,
             db_path=str(db_path),
             config_path=args.config,
+            findings_policy=args.findings_policy,
         )
+    except ResidualFindingsBlocked as exc:
+        print(
+            f"BLOCKED: would export residual detected-sensitive items {exc.counts}; "
+            "no files written.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
     finally:
         conn.close()
+    if result.get("residual_findings") and result.get("residual_findings_policy") == "warn":
+        print(f"WARNING: residual detected-sensitive items in export: {result['residual_findings']}")
     print(f"[{account_key}] Wrote {result['messages_written']} messages to {out_path}")
 
 

@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..security.policy import default_export_profile, resolve_export_profile
+from ..security.findings import ResidualFindingsBlocked, merge_counts
+from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
 from .projection import prepare_projection
 
 
@@ -22,6 +23,7 @@ def export_jsonl(
     export_profile: str | None = None,
     db_path: str | None = None,
     config_path: str | None = None,
+    findings_policy: str | None = None,
 ) -> dict[str, Any]:
     jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
     include_classification = jsonl_config.get("include_classification", True)
@@ -29,6 +31,7 @@ def export_jsonl(
     config_default = default_export_profile(security.get("default_export_profile"))
     security_profile = config_default
     effective_profile = resolve_export_profile(export_profile, config_default)
+    policy = resolve_findings_policy(security.get("on_residual_findings"), override=findings_policy)
 
     if account_id is not None:
         rows = conn.execute(
@@ -88,11 +91,54 @@ def export_jsonl(
                     "classifier_type": cr[5],
                 }
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    written = 0
     candidate_message_count = len(rows)
     excluded_message_count = 0
     any_scrubbed = False
+    residual_total: dict[str, int] = {}
+    projected_records: list[dict[str, Any]] = []
+
+    for row in rows:
+        record = dict(zip(cols, row))
+
+        per_record_profile = (classifications.get(record["id"]) or {}).get("export_profile")
+        projected = prepare_projection(
+            record,
+            config,
+            override_profile=export_profile,
+            record_profile=per_record_profile,
+            clear_body_word_count_for_metadata_only=True,
+        )
+        if projected is None:
+            excluded_message_count += 1
+            continue
+
+        record = projected.record
+        merge_counts(residual_total, projected.residual)
+        if projected.was_scrubbed:
+            any_scrubbed = True
+
+        record["account_key"] = account_key
+        try:
+            record["recipients"] = json.loads(record.pop("recipients_json") or "[]")
+            record["cc"] = json.loads(record.pop("cc_json") or "[]")
+        except Exception:
+            record["recipients"] = []
+            record["cc"] = []
+
+        if include_classification and record["id"] in classifications:
+            record["classification"] = classifications[record["id"]]
+
+        projected_records.append(record)
+
+    if policy == "block" and residual_total:
+        raise ResidualFindingsBlocked(residual_total)
+
+    warnings: list[str] = []
+    if policy == "warn" and residual_total:
+        warnings.append(f"residual detected-sensitive items in export: {residual_total}")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
     thread_keys: set[str] = set()
     date_min: str | None = None
     date_max: str | None = None
@@ -100,36 +146,7 @@ def export_jsonl(
     export_id = _start_export_run(conn, "jsonl", str(out_path), effective_profile, account_id)
 
     with out_path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            record = dict(zip(cols, row))
-
-            # Resolve export profile for this record
-            per_record_profile = (classifications.get(record["id"]) or {}).get("export_profile")
-            projected = prepare_projection(
-                record,
-                config,
-                override_profile=export_profile,
-                record_profile=per_record_profile,
-                clear_body_word_count_for_metadata_only=True,
-            )
-            if projected is None:
-                excluded_message_count += 1
-                continue
-            record = projected.record
-            if projected.was_scrubbed:
-                any_scrubbed = True
-
-            record["account_key"] = account_key
-            try:
-                record["recipients"] = json.loads(record.pop("recipients_json") or "[]")
-                record["cc"] = json.loads(record.pop("cc_json") or "[]")
-            except Exception:
-                record["recipients"] = []
-                record["cc"] = []
-
-            if include_classification and record["id"] in classifications:
-                record["classification"] = classifications[record["id"]]
-
+        for record in projected_records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1
 
@@ -171,6 +188,11 @@ def export_jsonl(
         export_format=jsonl_config,
         candidate_message_count=candidate_message_count,
         excluded_message_count=excluded_message_count,
+        warnings=warnings,
+        residual_scan_performed=True,
+        residual_findings_total=sum(residual_total.values()),
+        residual_findings_by_type=residual_total,
+        residual_findings_policy=policy,
     )
     manifest_path = write_jsonl_manifest(out_path, manifest_rows)
     source_count = 1 if out_path.exists() else 0
@@ -211,6 +233,11 @@ def export_jsonl(
                 message_count=written,
                 contains_scrubbed_content=any_scrubbed,
                 generated_sha256=manifest_rows[0]["generated_sha256"],
+                warnings=warnings,
+                residual_scan_performed=True,
+                residual_findings_total=sum(residual_total.values()),
+                residual_findings_by_type=residual_total,
+                residual_findings_policy=policy,
             ),
             export_id,
         ),
@@ -224,6 +251,10 @@ def export_jsonl(
         "contains_scrubbed_content": any_scrubbed,
         "candidate_message_count": candidate_message_count,
         "excluded_message_count": excluded_message_count,
+        "residual_findings": residual_total,
+        "residual_findings_total": sum(residual_total.values()),
+        "residual_findings_policy": policy,
+        "warnings": warnings,
     }
 
 
@@ -262,6 +293,11 @@ def _jsonl_export_metadata_json(
     message_count: int,
     contains_scrubbed_content: bool,
     generated_sha256: str,
+    warnings: list[str] | None,
+    residual_scan_performed: bool,
+    residual_findings_total: int,
+    residual_findings_by_type: dict[str, int],
+    residual_findings_policy: str,
 ) -> str:
     from .manifest import build_safe_export_run_metadata, security_manifest_posture
 
@@ -289,5 +325,10 @@ def _jsonl_export_metadata_json(
         message_count=message_count,
         contains_scrubbed_content=contains_scrubbed_content,
         generated_sha256=generated_sha256,
+        warnings=warnings,
+        residual_scan_performed=residual_scan_performed,
+        residual_findings_total=residual_findings_total,
+        residual_findings_by_type=residual_findings_by_type,
+        residual_findings_policy=residual_findings_policy,
     )
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
