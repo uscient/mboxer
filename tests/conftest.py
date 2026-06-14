@@ -13,12 +13,14 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+import yaml
 
 # Ensure sibling helper modules (e.g. ``_factories``) are importable from both
 # this conftest and the test modules, independent of pytest's import mode.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mboxer.accounts import create_account  # noqa: E402
+from mboxer.config import load_config  # noqa: E402
 from mboxer.db import init_db  # noqa: E402
 
 from _factories import base_config, make_attachment_message, make_mbox  # noqa: E402
@@ -111,3 +113,40 @@ def run_cli(
         )
 
     return _run
+
+
+# ── CLI config fixtures (shared by test_cli.py and the e2e pipeline test) ──────
+
+@pytest.fixture
+def cli_config(tmp_path: Path) -> Path:
+    """The shipped example config with every path rooted under tmp_path, written
+    to a YAML file the CLI can load."""
+    cfg = load_config("config/mboxer.example.yaml")
+    cfg["paths"] = {
+        "database": str(tmp_path / "mboxer.sqlite"),
+        "mbox_dir": str(tmp_path / "mboxes"),
+        "attachments_dir": str(tmp_path / "attachments"),
+        "exports_dir": str(tmp_path / "exports"),
+        "notebooklm_dir": str(tmp_path / "notebooklm"),
+        "rag_dir": str(tmp_path / "rag"),
+        "manifests_dir": str(tmp_path / "manifests"),
+        "logs_dir": str(tmp_path / "log"),
+    }
+    cfg.setdefault("exports", {}).setdefault("jsonl", {})["output_file"] = str(
+        tmp_path / "rag" / "messages.jsonl"
+    )
+    path = tmp_path / "mboxer.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def ready(run_cli, cli_config: Path) -> Path:
+    """An initialized DB with one account and the synthetic corpus ingested."""
+    run_cli("init-db", "--config", cli_config)
+    run_cli("account", "add", "primary-gmail", "--email", "u@example.com", "--config", cli_config)
+    run_cli(
+        "ingest", str(SYNTHETIC_MBOX),
+        "--config", cli_config, "--account", "primary-gmail", "--source-name", "syn",
+    )
+    return cli_config

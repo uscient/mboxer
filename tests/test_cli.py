@@ -13,50 +13,14 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-import yaml
 
 from mboxer.config import load_config
 
 SYNTHETIC_MBOX = Path(__file__).parent / "fixtures" / "synthetic.mbox"
 
 
-@pytest.fixture
-def cli_config(tmp_path: Path) -> Path:
-    """A real config (from the shipped example) with every path rooted in
-    tmp_path, written to a YAML file the CLI can load."""
-    cfg = load_config("config/mboxer.example.yaml")
-    cfg["paths"] = {
-        "database": str(tmp_path / "mboxer.sqlite"),
-        "mbox_dir": str(tmp_path / "mboxes"),
-        "attachments_dir": str(tmp_path / "attachments"),
-        "exports_dir": str(tmp_path / "exports"),
-        "notebooklm_dir": str(tmp_path / "notebooklm"),
-        "rag_dir": str(tmp_path / "rag"),
-        "manifests_dir": str(tmp_path / "manifests"),
-        "logs_dir": str(tmp_path / "log"),
-    }
-    cfg.setdefault("exports", {}).setdefault("jsonl", {})["output_file"] = str(
-        tmp_path / "rag" / "messages.jsonl"
-    )
-    path = tmp_path / "mboxer.yaml"
-    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    return path
-
-
 def _db_path(cli_config: Path) -> Path:
     return Path(load_config(str(cli_config))["paths"]["database"])
-
-
-@pytest.fixture
-def ready(run_cli, cli_config: Path) -> Path:
-    """An initialized DB with one account and the synthetic corpus ingested."""
-    run_cli("init-db", "--config", cli_config)
-    run_cli("account", "add", "primary-gmail", "--email", "u@example.com", "--config", cli_config)
-    run_cli(
-        "ingest", str(SYNTHETIC_MBOX),
-        "--config", cli_config, "--account", "primary-gmail", "--source-name", "syn",
-    )
-    return cli_config
 
 
 # ── argument parsing / help ───────────────────────────────────────────────────
