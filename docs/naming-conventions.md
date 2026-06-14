@@ -3,7 +3,7 @@
 ## Project names
 
 ```text
-GitHub repo:      xormania/mboxer
+GitHub repo:      uscient/mboxer
 Python package:   mboxer
 CLI command:      mboxer
 SQLite default:   var/mboxer.sqlite

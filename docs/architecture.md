@@ -11,7 +11,7 @@ MBOX files
   → SQLite metadata store
   → attachment extraction/tracking
   → deterministic rules
-  → local LLM classification
+  → local LLM classification (planned, not yet wired)
   → taxonomy governance
   → security scan / scrubbing
   → export profiles
@@ -42,9 +42,11 @@ src/mboxer/
   config.py
   limits.py
   naming.py
+  records.py
   db/
-    schema.sql
-    schema.py
+    schema.sql        # reference snapshot (CI-validated)
+    schema.py         # applies migrations
+    migrations/       # versioned schema migrations
   ingest.py
   attachments.py
   normalize.py
@@ -53,10 +55,13 @@ src/mboxer/
   security/
     scan.py
     scrub.py
+    detectors.py
+    findings.py
     policy.py
   exporters/
     notebooklm.py
     jsonl.py
+    projection.py
     manifest.py
 ```
 

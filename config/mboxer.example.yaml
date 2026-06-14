@@ -1,6 +1,6 @@
 project:
   name: mboxer
-  repo: xormania/mboxer
+  repo: uscient/mboxer
   default_database: var/mboxer.sqlite
 
 # Account settings.
@@ -8,8 +8,11 @@ project:
 # Default behavior operates on one account at a time.
 # Cross-account operations must be explicit via --accounts key1,key2.
 accounts:
-  default_account: null      # auto-select when only one account exists
-  require_account: true      # fail if multiple accounts exist and --account is omitted
+  # NOTE: account resolution is currently built-in, not driven by these keys.
+  # One account -> auto-selected; multiple accounts -> --account is required.
+  # The keys below are reserved placeholders and are not read by the code yet.
+  default_account: null      # reserved (not yet wired)
+  require_account: true       # reserved (not yet wired)
 
 paths:
   database: var/mboxer.sqlite
