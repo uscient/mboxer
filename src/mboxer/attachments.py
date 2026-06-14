@@ -62,11 +62,20 @@ def attachment_output_path(
     date_str: str | None,
     message_id: str,
     filename: str,
+    idx: int = 0,
 ) -> Path:
-    """Return the expected storage path for an attachment (does not create directories)."""
+    """Return the expected storage path for an attachment (does not create directories).
+
+    ``idx`` is the attachment's running index within the message and must match
+    the index ``extract_attachments`` assigns (0 for the first attachment, 1 for
+    the second, ...). It only affects nameless attachments, whose fallback name
+    is ``attachment-<idx>``; passing the running ``idx`` here yields the distinct
+    path extraction actually writes, so multiple nameless attachments no longer
+    collide on a single ``attachment-0`` path.
+    """
     year = (date_str[:4] if date_str else None) or "undated"
     msg_slug = slugify(message_id, max_length=60) if message_id else "unknown"
-    safe = _safe_attachment_filename(filename, 0)
+    safe = _safe_attachment_filename(filename, idx)
     return base_dir / account_key / year / msg_slug / safe
 
 
