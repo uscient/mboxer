@@ -8,6 +8,7 @@ the argparse wiring, every subcommand's happy path, and the contract errors
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -297,27 +298,41 @@ def test_ingest_create_account_inline(run_cli, cli_config):
 
 
 @pytest.mark.integration
-def test_export_notebooklm_combined_accounts(run_cli, cli_config, mbox_factory, tmp_path):
-    # Each account needs its own source file (mbox_sources.file_path is unique)
-    # and distinct message-ids.
-    def _msg(mid):
+def test_export_notebooklm_combined_accounts_stay_isolated(
+    run_cli, cli_config, mbox_factory, tmp_path
+):
+    """Combined --accounts export: each account's content and manifest land under
+    its own directory with no cross-account bleed (mbox_sources.file_path is unique,
+    so each account also needs its own source file)."""
+    def _msg(key, marker):
         return (
-            f"From: s@example.com\nTo: u@example.com\nSubject: Note {mid}\n"
-            f"Date: Mon, 01 Jan 2024 10:00:00 +0000\nMessage-ID: <{mid}@example.com>\n\nBody {mid}\n"
+            f"From: s@example.com\nTo: u@example.com\nSubject: {marker} note\n"
+            f"Date: Mon, 01 Jan 2024 10:00:00 +0000\nMessage-ID: <{key}-1@example.com>\n\n"
+            f"This is {marker} unique body content.\n"
         )
-    for key, mid in (("a-gmail", "ax"), ("b-gmail", "bx")):
+    for key, marker in (("alpha", "ALPHA"), ("beta", "BETA")):
         run_cli("account", "add", key, "--config", cli_config)
-        mbox = mbox_factory([_msg(mid)], name=f"{key}.mbox")
-        run_cli("ingest", str(mbox), "--config", cli_config,
-                "--account", key, "--source-name", "syn")
+        mbox = mbox_factory([_msg(key, marker)], name=f"{key}.mbox")
+        run_cli("ingest", str(mbox), "--config", cli_config, "--account", key, "--source-name", "syn")
+
     out = tmp_path / "nlm"
     result = run_cli(
         "export", "notebooklm", "--config", cli_config,
-        "--accounts", "a-gmail,b-gmail", "--profile", "ultra_safe", "--out", out,
+        "--accounts", "alpha,beta", "--profile", "ultra_safe", "--out", out,
     )
     assert result.exit_code == 0
-    assert (out / "a-gmail").exists()
-    assert (out / "b-gmail").exists()
+
+    alpha_md = "\n".join(f.read_text() for f in (out / "alpha").rglob("*.md"))
+    beta_md = "\n".join(f.read_text() for f in (out / "beta").rglob("*.md"))
+    assert "ALPHA" in alpha_md and "BETA" not in alpha_md
+    assert "BETA" in beta_md and "ALPHA" not in beta_md
+
+    for key in ("alpha", "beta"):
+        manifest = json.loads((out / key / "manifest.json").read_text())
+        assert manifest  # non-empty
+        assert all(row["account_key"] == key for row in manifest)  # no provenance mix-up
+        # Lineage structure is present (field presence, not timestamp values).
+        assert {"tool_name", "export_kind", "account_key", "source_pack"} <= set(manifest[0].keys())
 
 
 @pytest.mark.integration
