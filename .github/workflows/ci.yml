@@ -42,7 +42,7 @@ jobs:
         run: mypy src/
 
   test:
-    name: Test (pytest) / Python ${{ matrix.python-version }}
+    name: Test + coverage (pytest) / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,5 +62,27 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Generate synthetic test fixtures
         run: python tests/fixtures/make_synthetic.py
-      - name: Run pytest
-        run: pytest --tb=short -q
+      - name: Run pytest with coverage (fails under the pyproject coverage floor)
+        run: pytest --tb=short --cov=mboxer --cov-report=term-missing
+
+  random-order:
+    name: Random order (pytest-randomly canary)
+    runs-on: ubuntu-latest
+    # Informational canary: surfaces order-dependence without blocking merges.
+    # pytest-randomly prints "Using --randomly-seed=..." so any failure reproduces
+    # via `pytest -p randomly --randomly-seed=<seed>`.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Generate synthetic test fixtures
+        run: python tests/fixtures/make_synthetic.py
+      - name: Run suite in random order (seed printed for reproduction)
+        run: python -m pytest -p randomly -o addopts="--strict-markers --strict-config" --tb=short

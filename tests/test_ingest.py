@@ -11,13 +11,7 @@ from mboxer.accounts import create_account
 from mboxer.db import init_db
 from mboxer.ingest import ingest_mbox
 
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
+from _factories import make_mbox as _make_mbox
 
 
 def _remake_mbox(path: Path, messages: list[str]) -> None:
@@ -704,3 +698,173 @@ def test_attachment_metadata_boundary_excludes_payload_from_ingest_evidence(
         for value in row
     )
     assert payload_text not in evidence_text
+
+
+# ── Empty / malformed input and resume continuation ──────────────────────────
+
+def test_empty_mbox_completes_cleanly(tmp_path, config, db_with_account):
+    mbox_path = tmp_path / "empty.mbox"
+    _make_mbox(mbox_path, [])
+
+    counts = ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
+
+    assert counts == {"seen": 0, "inserted": 0, "skipped": 0, "replaced": 0, "errors": 0}
+    conn = sqlite3.connect(db_with_account)
+    status = conn.execute("SELECT status FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    assert status == "completed"
+
+
+def test_resume_continues_from_valid_checkpoint_without_loss_or_dupes(
+    tmp_path, config, db_with_account
+):
+    mbox_path = tmp_path / "test.mbox"
+    _make_mbox(mbox_path, [SIMPLE_MSG, REPLY_MSG, GMAIL_MSG])
+    ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
+
+    # Simulate a crash after message '0': drop the later messages and leave an
+    # interrupted run checkpointed at the valid key '0'.
+    conn = sqlite3.connect(db_with_account)
+    account_id, source_id = conn.execute("SELECT account_id, id FROM mbox_sources").fetchone()
+    conn.execute("DELETE FROM messages WHERE mbox_key IN ('1', '2')")
+    conn.execute(
+        """
+        INSERT INTO ingest_runs
+          (account_id, source_id, status, last_mbox_key, messages_seen, messages_inserted)
+        VALUES (?, ?, 'interrupted', '0', 1, 1)
+        """,
+        (account_id, source_id),
+    )
+    conn.commit()
+    conn.close()
+
+    counts = ingest_mbox(
+        mbox_path, config=config, db_path=db_with_account, account_key="test-gmail", resume=True,
+    )
+
+    assert counts["skipped"] == 1     # key '0' skipped (already done)
+    assert counts["inserted"] == 2    # '1' and '2' picked up — no loss
+    assert counts["errors"] == 0      # valid checkpoint -> no InvalidResumeCheckpoint
+
+    conn = sqlite3.connect(db_with_account)
+    keys = [r[0] for r in conn.execute("SELECT mbox_key FROM messages ORDER BY mbox_key")]
+    status = conn.execute("SELECT status FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    assert keys == ["0", "1", "2"]    # all present, no duplicates
+    assert status == "completed"
+
+
+def test_corrupt_mbox_marks_run_failed(tmp_path, config, db_with_account, monkeypatch):
+    mbox_path = tmp_path / "corrupt.mbox"
+    _make_mbox(mbox_path, [SIMPLE_MSG])
+
+    class _Unreadable:
+        def keys(self):
+            raise OSError("corrupt mbox")
+
+    monkeypatch.setattr(ingest_module.mailbox, "mbox", lambda *a, **k: _Unreadable())
+
+    with pytest.raises(RuntimeError, match="Failed to open MBOX"):
+        ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
+
+    conn = sqlite3.connect(db_with_account)
+    status = conn.execute("SELECT status FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    assert status == "failed"
+
+
+def test_unreadable_message_recorded_as_ingest_error(tmp_path, config, db_with_account, monkeypatch):
+    mbox_path = tmp_path / "test.mbox"
+    _make_mbox(mbox_path, [SIMPLE_MSG, REPLY_MSG])
+    real_keys = list(mailbox.mbox(str(mbox_path)).keys())
+
+    class _BadReader:
+        def keys(self):
+            return real_keys
+
+        def get_message(self, key):
+            raise ValueError("cannot read message")
+
+    monkeypatch.setattr(ingest_module.mailbox, "mbox", lambda *a, **k: _BadReader())
+
+    counts = ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
+
+    assert counts["inserted"] == 0
+    assert counts["errors"] == 2
+    conn = sqlite3.connect(db_with_account)
+    rows = conn.execute("SELECT error_type, error_message FROM ingest_errors").fetchall()
+    status = conn.execute("SELECT status FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    assert len(rows) == 2
+    assert all(r[0] == "ValueError" for r in rows)
+    assert all("Failed to read message" in r[1] for r in rows)
+    assert status == "completed"  # per-message read errors don't abort the run
+
+
+def test_store_body_html_true_and_body_truncated_with_per_message_checkpoint(
+    tmp_path, config, db_with_account
+):
+    cfg = {**config, "ingest": {"batch_commit_size": 1, "store_body_html": True, "max_body_chars": 10}}
+    long_msg = (
+        "From: a@example.com\nTo: u@example.com\nSubject: Long body\n"
+        "Date: Mon, 01 Jan 2024 10:00:00 +0000\nMessage-ID: <long-1@example.com>\n\n"
+        + ("x" * 50) + "\n"
+    )
+    mbox_path = tmp_path / "long.mbox"
+    _make_mbox(mbox_path, [long_msg])
+
+    counts = ingest_mbox(mbox_path, config=cfg, db_path=db_with_account, account_key="test-gmail")
+
+    assert counts["inserted"] == 1
+    conn = sqlite3.connect(db_with_account)
+    body_text = conn.execute("SELECT body_text FROM messages WHERE mbox_key = '0'").fetchone()[0]
+    conn.close()
+    assert len(body_text) == 10  # truncated to max_body_chars
+
+
+def test_storage_failure_is_recorded_as_ingest_error(tmp_path, config, db_with_account, monkeypatch):
+    mbox_path = tmp_path / "test.mbox"
+    _make_mbox(mbox_path, [GMAIL_MSG])  # carries X-Gmail-Labels -> _store_labels is called
+
+    def boom(*_a, **_k):
+        raise RuntimeError("label store failed")
+
+    monkeypatch.setattr(ingest_module, "_store_labels", boom)
+
+    counts = ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
+
+    assert counts["errors"] == 1
+    conn = sqlite3.connect(db_with_account)
+    err = conn.execute("SELECT error_type, error_message FROM ingest_errors").fetchone()
+    conn.close()
+    assert err[0] == "RuntimeError"
+    assert "store normalized message evidence" in err[1]
+
+
+def test_keyboard_interrupt_marks_run_interrupted_with_checkpoint(
+    tmp_path, config, db_with_account, monkeypatch
+):
+    mbox_path = tmp_path / "test.mbox"
+    _make_mbox(mbox_path, [SIMPLE_MSG, REPLY_MSG])
+
+    real_normalize = ingest_module.normalize_message
+    calls = {"n": 0}
+
+    def interrupt_on_second(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise KeyboardInterrupt
+        return real_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(ingest_module, "normalize_message", interrupt_on_second)
+
+    counts = ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
+
+    assert counts["inserted"] == 1  # first message stored before the interrupt
+    conn = sqlite3.connect(db_with_account)
+    status, last_key = conn.execute(
+        "SELECT status, last_mbox_key FROM ingest_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert status == "interrupted"
+    assert last_key == "0"  # checkpoint saved -> --resume can continue

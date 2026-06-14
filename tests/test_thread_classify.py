@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import json
-import mailbox
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from mboxer.accounts import create_account
 from mboxer.classify import _build_thread_input, _select_excerpts, run_rule_classification
 from mboxer.db import init_db
 from mboxer.ingest import ingest_mbox
+
+from _factories import base_config, make_mbox as _make_mbox
 
 
 # ── Synthetic messages ────────────────────────────────────────────────────────
@@ -61,11 +64,9 @@ X-Gmail-Labels: Inbox
 How are you doing?
 """
 
-CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "taxonomy": {"locked_categories": ["postal/usps-informed-delivery"]},
-    "rules": [
+CONFIG = base_config(
+    taxonomy={"locked_categories": ["postal/usps-informed-delivery"]},
+    rules=[
         {
             "name": "usps-informed-delivery",
             "match": {
@@ -79,24 +80,12 @@ CONFIG = {
             },
         }
     ],
-}
+)
 
-NO_RULES_CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "rules": [],
-}
+NO_RULES_CONFIG = base_config(rules=[])
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
-
 
 def _setup(
     tmp_path: Path,
@@ -616,5 +605,108 @@ def test_jsonl_export_uses_inherited_thread_classification(tmp_path):
             if json.loads(line).get("classification", {}).get("classifier_type") == "rule_inherited"
         )
         assert classified_count == 3
+    finally:
+        conn.close()
+
+
+# ── Inheritance precedence matrix ─────────────────────────────────────────────
+# Thread inheritance must yield to an explicit message classification of EQUAL OR
+# HIGHER confidence, and otherwise apply. The grid covers every combination of
+# thread action (assign=1.0 / assign_hint=0.75) x pre-existing message rule.
+
+def _config_with_thread_action(action: str) -> dict:
+    """USPS thread rule using either 'assign' (conf 1.0) or 'assign_hint' (0.75)."""
+    return base_config(
+        taxonomy={"locked_categories": ["postal/usps-informed-delivery"]},
+        rules=[{
+            "name": "usps-informed-delivery",
+            "match": {"from_contains": ["usps"], "subject_contains": ["informed delivery"]},
+            action: {
+                "category_path": "postal/usps-informed-delivery",
+                "sensitivity": "medium",
+                "export_profile": "metadata-only",
+            },
+        }],
+    )
+
+
+@pytest.mark.parametrize(
+    "thread_action, existing_type, existing_conf, expect_inherited",
+    [
+        ("assign",      None,        None, True),   # no existing -> inherit at 1.0
+        ("assign",      "rule_hint", 0.75, True),   # 1.0 > 0.75 -> inherit overrides the weaker hint
+        ("assign",      "rule",      1.0,  False),  # 1.0 >= 1.0 -> preserve the explicit message rule
+        ("assign_hint", None,        None, True),   # no existing -> inherit at 0.75
+        ("assign_hint", "rule_hint", 0.75, False),  # 0.75 >= 0.75 -> preserve (equal-confidence boundary)
+        ("assign_hint", "rule",      1.0,  False),  # 1.0 >= 0.75 -> preserve
+    ],
+)
+def test_inheritance_precedence_matrix(
+    tmp_path, thread_action, existing_type, existing_conf, expect_inherited
+):
+    config = _config_with_thread_action(thread_action)
+    db_path, account_id = _setup(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        msg1_id, thread_key = conn.execute(
+            "SELECT id, thread_key FROM messages WHERE sender = 'noreply@usps.com' ORDER BY id"
+        ).fetchone()
+
+        if existing_type is not None:
+            conn.execute(
+                "INSERT INTO classifications (account_id, target_type, message_db_id, thread_key, "
+                "category_path, classifier_type, classifier_name, confidence) "
+                "VALUES (?, 'message', ?, ?, 'postal/usps-informed-delivery', ?, 'pre', ?)",
+                (account_id, msg1_id, thread_key, existing_type, existing_conf),
+            )
+            conn.commit()
+
+        run_rule_classification(conn, config, level="thread", account_id=account_id)
+
+        types = [
+            r[0] for r in conn.execute(
+                "SELECT classifier_type FROM classifications "
+                "WHERE message_db_id = ? AND account_id = ? AND target_type = 'message'",
+                (msg1_id, account_id),
+            ).fetchall()
+        ]
+
+        if expect_inherited:
+            assert "rule_inherited" in types
+            conf = conn.execute(
+                "SELECT confidence FROM classifications WHERE message_db_id = ? "
+                "AND classifier_type = 'rule_inherited' AND account_id = ?",
+                (msg1_id, account_id),
+            ).fetchone()[0]
+            assert conf == (1.0 if thread_action == "assign" else 0.75)
+        else:
+            # The explicit message-level classification is preserved; nothing inherited.
+            assert "rule_inherited" not in types
+            assert existing_type in types
+    finally:
+        conn.close()
+
+
+def _rule_without_category(action: str) -> dict:
+    return base_config(rules=[{
+        "name": "no-category",
+        "match": {"from_contains": ["usps"], "subject_contains": ["informed delivery"]},
+        action: {"sensitivity": "medium"},  # deliberately omits category_path
+    }])
+
+
+@pytest.mark.parametrize("level", ["thread", "message"])
+def test_matching_rule_without_category_path_classifies_nothing(tmp_path, level):
+    """A rule that matches but supplies no category_path must be a graceful no-op,
+    not a crash and not a half-written classification."""
+    config = _rule_without_category("assign")
+    db_path, account_id = _setup(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        run_rule_classification(conn, config, level=level, account_id=account_id)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM classifications WHERE account_id = ?", (account_id,)
+        ).fetchone()[0]
+        assert n == 0
     finally:
         conn.close()

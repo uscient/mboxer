@@ -1,12 +1,13 @@
 import sqlite3
 import textwrap
-import mailbox
 from pathlib import Path
 
 from mboxer.accounts import create_account
 from mboxer.classify import run_rule_classification
 from mboxer.db import init_db
 from mboxer.ingest import ingest_mbox
+
+from _factories import base_config, make_mbox as _make_mbox
 
 
 USPS_MSG = textwrap.dedent("""\
@@ -29,11 +30,9 @@ UNMATCHED_MSG = textwrap.dedent("""\
     How are things?
 """)
 
-CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "taxonomy": {"locked_categories": ["postal/usps-informed-delivery"]},
-    "rules": [
+CONFIG = base_config(
+    taxonomy={"locked_categories": ["postal/usps-informed-delivery"]},
+    rules=[
         {
             "name": "usps-informed-delivery",
             "match": {
@@ -47,15 +46,7 @@ CONFIG = {
             },
         }
     ],
-}
-
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
+)
 
 
 def test_rule_classification(tmp_path):
