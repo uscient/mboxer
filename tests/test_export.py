@@ -1,7 +1,6 @@
 import json
 import sqlite3
 import textwrap
-import mailbox
 from pathlib import Path
 
 from mboxer.accounts import create_account
@@ -11,6 +10,8 @@ from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.exporters.jsonl import export_jsonl
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import resolve_notebooklm_limits, validate_notebooklm_limits, NotebookLMLimits
+
+from _factories import base_config, make_mbox as _make_mbox
 
 
 MSGS = [
@@ -35,22 +36,12 @@ MSGS = [
     """),
 ]
 
-CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "exports": {
+CONFIG = base_config(
+    exports={
         "jsonl": {"include_classification": True, "output_file": "exports/rag/messages.jsonl"},
         "notebooklm": {"profile": "ultra_safe"},
     },
-}
-
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
+)
 
 
 def _setup_db_with_account(tmp_path: Path, account_key: str = "test-gmail") -> tuple[Path, int]:
@@ -61,7 +52,12 @@ def _setup_db_with_account(tmp_path: Path, account_key: str = "test-gmail") -> t
     conn = sqlite3.connect(db_path)
     account_id = create_account(conn, account_key, email_address=f"{account_key}@example.com")
     conn.close()
-    ingest_mbox(mbox_path, config=CONFIG, db_path=db_path, account_key=account_key)
+    ingest_mbox(
+        mbox_path,
+        config={**CONFIG, "paths": {"attachments_dir": str(tmp_path / "attachments")}},
+        db_path=db_path,
+        account_key=account_key,
+    )
     return db_path, account_id
 
 

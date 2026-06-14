@@ -3,7 +3,6 @@ import csv
 import json
 import sqlite3
 import textwrap
-import mailbox
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,8 @@ from mboxer.exporters.manifest import (
 from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import resolve_notebooklm_limits
+
+from _factories import base_config, make_mbox as _make_mbox
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
 
@@ -70,11 +71,7 @@ ATTACHMENT_MSG = textwrap.dedent(f"""\
     --BOUNDARY--
 """)
 
-INGEST_CONFIG = {
-    "paths": {"attachments_dir": "/tmp/test-manifest-attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "security": {"default_export_profile": "scrubbed"},
-}
+INGEST_CONFIG = base_config(security={"default_export_profile": "scrubbed"})
 
 CLASSIFY_CONFIG = {
     **INGEST_CONFIG,
@@ -94,14 +91,6 @@ CLASSIFY_CONFIG = {
         }
     ],
 }
-
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
 
 
 @pytest.fixture()

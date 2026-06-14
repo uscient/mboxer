@@ -11,13 +11,7 @@ from mboxer.accounts import create_account
 from mboxer.db import init_db
 from mboxer.ingest import ingest_mbox
 
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
+from _factories import make_mbox as _make_mbox
 
 
 def _remake_mbox(path: Path, messages: list[str]) -> None:

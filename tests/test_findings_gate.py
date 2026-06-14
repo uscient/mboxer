@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import mailbox
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -17,6 +16,8 @@ from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import NotebookLMLimits
 from mboxer.security.findings import ResidualFindingsBlocked
+
+from _factories import make_mbox as _make_mbox
 
 PHONE_BODY = "Call us at 555-867-5309 if you have questions."
 SSN_BODY = "Your SSN on file is 123-45-6789."
@@ -91,14 +92,6 @@ def _raw_message(subject: str, message_id: str, body: str) -> str:
         "\n"
         f"{body}"
     )
-
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
 
 
 def _message_set(bodies: list[str]) -> list[str]:

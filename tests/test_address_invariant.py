@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import mailbox
 import sqlite3
 import textwrap
 from pathlib import Path
@@ -16,6 +15,8 @@ from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import NotebookLMLimits
 from mboxer.records import decode_address_fields, loads_address_list
+
+from _factories import base_config, make_mbox as _make_mbox
 
 
 MSG_1 = textwrap.dedent("""\
@@ -39,11 +40,9 @@ MSG_2 = textwrap.dedent("""\
     Synthetic reply body.
 """)
 
-CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "security": {"default_export_profile": "raw", "scrub_enabled": False},
-    "rules": [
+CONFIG = base_config(
+    security={"default_export_profile": "raw", "scrub_enabled": False},
+    rules=[
         {
             "name": "address-invariant-alert",
             "match": {
@@ -56,15 +55,7 @@ CONFIG = {
             },
         }
     ],
-}
-
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
+)
 
 
 def _setup_db(tmp_path: Path, *, suffix: str = "") -> tuple[Path, int, str]:

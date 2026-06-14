@@ -15,14 +15,13 @@ from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.ingest import ingest_mbox
 from mboxer.limits import resolve_notebooklm_limits
 
+from _factories import base_config
+
 SYNTHETIC_MBOX = Path(__file__).parent / "fixtures" / "synthetic.mbox"
 EXAMPLE_CONFIG_PATH = "config/mboxer.example.yaml"
 
 # Shared config for ingest tests
-INGEST_CONFIG = {
-    "paths": {"attachments_dir": "/tmp/test-attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-}
+INGEST_CONFIG = base_config()
 
 CLASSIFY_CONFIG = {
     **INGEST_CONFIG,

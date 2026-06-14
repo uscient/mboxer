@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import mailbox
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +9,8 @@ from mboxer.accounts import create_account
 from mboxer.classify import _build_thread_input, _select_excerpts, run_rule_classification
 from mboxer.db import init_db
 from mboxer.ingest import ingest_mbox
+
+from _factories import base_config, make_mbox as _make_mbox
 
 
 # ── Synthetic messages ────────────────────────────────────────────────────────
@@ -61,11 +62,9 @@ X-Gmail-Labels: Inbox
 How are you doing?
 """
 
-CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "taxonomy": {"locked_categories": ["postal/usps-informed-delivery"]},
-    "rules": [
+CONFIG = base_config(
+    taxonomy={"locked_categories": ["postal/usps-informed-delivery"]},
+    rules=[
         {
             "name": "usps-informed-delivery",
             "match": {
@@ -79,24 +78,12 @@ CONFIG = {
             },
         }
     ],
-}
+)
 
-NO_RULES_CONFIG = {
-    "paths": {"attachments_dir": "/tmp/attachments"},
-    "ingest": {"batch_commit_size": 10, "store_body_html": False, "max_body_chars": 50000},
-    "rules": [],
-}
+NO_RULES_CONFIG = base_config(rules=[])
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
-
 
 def _setup(
     tmp_path: Path,

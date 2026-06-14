@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import mailbox
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,8 @@ from mboxer.ingest import ingest_mbox
 from mboxer.limits import resolve_notebooklm_limits
 from mboxer.security.policy import needs_scrub, resolve_export_profile
 from mboxer.security.scan import run_security_scan
+
+from _factories import make_mbox as _make_mbox
 
 # ── Shared test data ──────────────────────────────────────────────────────────
 
@@ -137,14 +138,6 @@ INVALID_DEFAULT_SCRUB_CONFIG: dict[str, Any] = {
         "redact_credit_card_like_numbers": True,
     },
 }
-
-
-def _make_mbox(path: Path, messages: list[str]) -> None:
-    mbox = mailbox.mbox(str(path), create=True)
-    for raw in messages:
-        mbox.add(mailbox.mboxMessage(raw))
-    mbox.flush()
-    mbox.close()
 
 
 @pytest.fixture()
