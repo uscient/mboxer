@@ -763,4 +763,4 @@ step you take when you tag a release.
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE).

@@ -1,11 +1,13 @@
-# Claude Code Prompt: Build `xormania/mboxer`
+# Claude Code Prompt: Build `uscient/mboxer`
 
-You are working in the `xormania/mboxer` repository.
+> **Note:** Historical bootstrap prompt from early scaffold work. The core pipeline is implemented; use `AGENTS.md` and `config/mboxer.example.yaml` for current behavior unless a task explicitly asks to extend missing pieces.
+
+You are working in the `uscient/mboxer` repository.
 
 Project identity:
 
 ```text
-GitHub repo:      xormania/mboxer
+GitHub repo:      uscient/mboxer
 Python package:   mboxer
 CLI command:      mboxer
 Default database: var/mboxer.sqlite
