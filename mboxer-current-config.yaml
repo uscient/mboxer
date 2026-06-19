@@ -1,7 +1,19 @@
+# Agent/reference copy. Canonical template: config/mboxer.example.yaml
 project:
   name: mboxer
-  repo: xormania/mboxer
+  repo: uscient/mboxer
   default_database: var/mboxer.sqlite
+
+# Account settings.
+# Use: mboxer account add <account-key> --email <address>
+# Default behavior operates on one account at a time.
+# Cross-account operations must be explicit via --accounts key1,key2.
+accounts:
+  # NOTE: account resolution is currently built-in, not driven by these keys.
+  # One account -> auto-selected; multiple accounts -> --account is required.
+  # The keys below are reserved placeholders and are not read by the code yet.
+  default_account: null      # reserved (not yet wired)
+  require_account: true       # reserved (not yet wired)
 
 paths:
   database: var/mboxer.sqlite
@@ -25,13 +37,23 @@ ingest:
     - body_hash
 
 classification:
-  provider: ollama
-  model: llama3.1:8b
-  endpoint: http://localhost:11434/api/generate
-  classify_level: thread # message | thread
+  provider: rules          # rules | ollama
+  level: thread            # message | thread
+  prompt_version: classifier-v1
   confidence_review_threshold: 0.70
   allow_category_proposals: true
   require_review_for_new_categories: true
+  ollama:
+    host: http://localhost:11434
+    default_model: llama3.1:8b
+    timeout_seconds: 60
+    temperature: 0
+    num_ctx: 8192
+    models:
+      classifier: llama3.1:8b
+      summarizer: llama3.1:8b
+      taxonomy_manager: llama3.1:8b
+      security_reviewer: llama3.1:8b
 
 # Category paths are slash-delimited and later become directories.
 taxonomy:
