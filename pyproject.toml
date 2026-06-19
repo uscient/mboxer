@@ -100,3 +100,6 @@ show_missing = true
 # Permanent CI-enforced gate, locked at the achieved level (94.33%). Coverage
 # may not regress below this on merge; raise it only when real gains are added.
 fail_under = 94
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "build", "dist"]
