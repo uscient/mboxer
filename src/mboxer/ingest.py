@@ -387,7 +387,7 @@ def ingest_mbox(
             # rolled back on any failed message or interruption.
             conn.execute(
                 "DELETE FROM classifications WHERE account_id = ? "
-                "AND (target_type = 'thread' OR classifier_type = 'rule_inherited') "
+                "AND target_type = 'thread' "
                 "AND thread_key IN (SELECT thread_key FROM messages WHERE account_id = ? AND source_id = ?)",
                 (account_id, account_id, source_id),
             )
@@ -470,9 +470,11 @@ def ingest_mbox(
 
                         if record.get("thread_key"):
                             if force:
+                                # Keep untouched messages' inherited export
+                                # restrictions until reclassification succeeds.
                                 conn.execute(
                                     "DELETE FROM classifications WHERE account_id = ? AND thread_key = ? "
-                                    "AND (target_type = 'thread' OR classifier_type = 'rule_inherited')",
+                                    "AND target_type = 'thread'",
                                     (account_id, record["thread_key"]),
                                 )
                             participants = loads_address_list(record["recipients_json"])
@@ -564,18 +566,31 @@ def ingest_mbox(
             return counts
 
         if force:
-            if _file_sha256(mbox_path) != expected_source_hash:
-                record_error(mbox_key=None, error_type="SourceIdentityError",
-                             error_message="Source changed while replacement was running.")
+            try:
+                current_source_hash = _file_sha256(mbox_path)
+                stat = mbox_path.stat()
+            except OSError as exc:
+                record_error(
+                    mbox_key=None, error_type=type(exc).__name__,
+                    error_message="Failed to verify source identity after replacement.",
+                )
+            except KeyboardInterrupt:
+                rollback_replacement("interrupted")
+                print("\nReplacement interrupted; previous source evidence retained. Rerun with --force.")
+                return counts
+            else:
+                if current_source_hash != expected_source_hash:
+                    record_error(mbox_key=None, error_type="SourceIdentityError",
+                                 error_message="Source changed while replacement was running.")
+                else:
+                    conn.execute(
+                        "UPDATE mbox_sources SET file_size = ?, file_sha256 = ?, source_mtime = ? WHERE id = ?",
+                        (stat.st_size, expected_source_hash, stat.st_mtime, source_id),
+                    )
             if counts["errors"]:
                 rollback_replacement("failed")
                 print("Replacement failed; previous source evidence retained. Rerun with --force.")
                 return counts
-            stat = mbox_path.stat()
-            conn.execute(
-                "UPDATE mbox_sources SET file_size = ?, file_sha256 = ?, source_mtime = ? WHERE id = ?",
-                (stat.st_size, expected_source_hash, stat.st_mtime, source_id),
-            )
 
         _update_run(
             conn, run_id, status="completed",

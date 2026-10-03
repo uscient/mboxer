@@ -11,14 +11,20 @@ invocations remain available in `ingest_errors`.
 including messages that disappeared from a shorter archive. Failed reads,
 normalization, database writes, requested attachment extraction, or interruption
 roll back the replacement and retain prior message evidence and source identity.
-The source hash is checked again before committing the replacement. `--force
+The source hash is checked again before committing the replacement. Failure to
+read or stat the source during that check records a failed run; interruption
+records an interrupted run. Both retain the previous evidence. `--force
 --resume` starts a complete replacement; it never applies an older source's
 checkpoint to new content. An interrupted replacement must be rerun with `--force`.
 
 Successful replacement rebuilds source thread summaries and invalidates affected
-thread classifications and inherited message classifications. This includes a
-newly joined thread in another source of the same account. Run classification
-again to derive results from the new evidence. Unrelated accounts and sources
+thread classifications, including a newly joined thread in another source of the
+same account. Untouched messages keep their inherited classifications and export
+restrictions until successful reclassification replaces them. A failed or
+unmatched reclassification retains the prior restrictions. Run classification
+again to derive results from the new evidence. Classification reads and writes
+share one database snapshot; a concurrent replacement that makes the snapshot
+stale causes classification to fail safely and requires retry. Unrelated accounts and sources
 retain their messages. Historical export run records remain, while replaced
 message-level export items, findings, labels, and attachment rows are removed.
 

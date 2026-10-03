@@ -169,7 +169,8 @@ def test_force_reclassifies_affected_threads_and_preserves_other_account(
     _run(path, tmp_db, config, force=True)
     with sqlite3.connect(tmp_db) as conn:
         assert conn.execute("SELECT * FROM classifications WHERE account_id=?", (other_id,)).fetchall() == original_other
-        assert conn.execute("SELECT COUNT(*) FROM classifications WHERE account_id=?", (account_id,)).fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM classifications WHERE account_id=? AND target_type='thread'", (account_id,)).fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM classifications WHERE account_id=? AND classifier_type='rule_inherited'", (account_id,)).fetchone() == (1,)
         # The surviving second source is still present and joins the new thread
         # classification; it is not left with an inherited stale result.
         assert run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
@@ -206,7 +207,7 @@ def test_inline_filename_attachment_is_extracted(tmp_path, tmp_db, make_account,
     assert _rows(tmp_db, "SELECT extraction_status FROM attachments") == [("extracted",)]
 
 
-def test_force_into_existing_thread_invalidates_inherited_classification(tmp_path, tmp_db, make_account, config):
+def test_force_into_existing_thread_refreshes_inherited_classification(tmp_path, tmp_db, make_account, config):
     account_id = make_account()
     config["rules"] = [{"name": "example", "match": {"from_domain": ["example.test"]},
                         "assign": {"category_path": "example"}}]
