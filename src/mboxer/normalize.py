@@ -4,26 +4,15 @@ import hashlib
 import json
 import re
 from datetime import UTC
-from email.header import decode_header
 from email.message import Message
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any
 
+from .mime import decode_bytes, decode_header_parts, iter_attachments
+
 
 def _decode_header_value(value: str | None) -> str:
-    if not value:
-        return ""
-    parts: list[str] = []
-    for encoded, charset in decode_header(value):
-        if isinstance(encoded, bytes):
-            enc = charset or "utf-8"
-            try:
-                parts.append(encoded.decode(enc, errors="replace"))
-            except LookupError:
-                parts.append(encoded.decode("latin-1", errors="replace"))
-        else:
-            parts.append(encoded)
-    return " ".join(parts).strip()
+    return " ".join(decode_header_parts(value)).strip()
 
 
 def _parse_address_list(header_value: str | None) -> list[str]:
@@ -60,11 +49,7 @@ def _extract_bodies(msg: Message) -> tuple[str | None, str | None]:
             return None
         if not isinstance(payload, bytes):
             return None
-        charset = part.get_content_charset("utf-8") or "utf-8"
-        try:
-            return payload.decode(charset, errors="replace")
-        except LookupError:
-            return payload.decode("latin-1", errors="replace")
+        return decode_bytes(payload, part.get_content_charset("utf-8"))
 
     if msg.is_multipart():
         for part in msg.walk():
@@ -98,15 +83,6 @@ def _html_to_text(html: str) -> str:
 
 def compute_body_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _count_attachments(msg: Message) -> int:
-    count = 0
-    for part in msg.walk():
-        cd = (part.get_content_disposition() or "").lower()
-        if "attachment" in cd or part.get_filename() is not None:
-            count += 1
-    return count
 
 
 def parse_gmail_labels(msg: Message) -> list[str]:
@@ -148,7 +124,7 @@ def normalize_message(msg: Message, source_id: int, mbox_key: str, account_id: i
     body_hash = compute_body_hash(body_text) if body_text else None
     body_chars = len(body_text) if body_text else 0
     body_word_count = len(body_text.split()) if body_text else 0
-    attachment_count = _count_attachments(msg)
+    attachment_count = sum(1 for _ in iter_attachments(msg))
 
     raw_headers = {k: v for k, v in msg.items()}
     gmail_labels = parse_gmail_labels(msg)

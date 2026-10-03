@@ -80,8 +80,9 @@ account key inline if you skipped step 2.
 
 ### 4. Classify with rules
 
-Assign categories, sensitivities, and export profiles deterministically. Defaults to thread level
-with inheritance down to messages.
+Assign categories, sensitivities, and export profiles deterministically.
+`classification.level` defaults to `thread`, with inheritance down to messages.
+The explicit `--level` below overrides configuration.
 
 ```bash
 mboxer classify --config config/mboxer.yaml --account primary-gmail --level thread
@@ -89,13 +90,14 @@ mboxer classify --config config/mboxer.yaml --account primary-gmail --level thre
 
 ### 5. Review categories
 
-The classifier can propose new categories. Review counts and pending proposals, then approve or
-reject before they are used in exports.
+Review category counts and any pending proposals already in the database.
+Rule classification does not generate proposals; the approval/rejection commands
+manage existing proposals.
 
 ```bash
 mboxer review-categories --config config/mboxer.yaml --account primary-gmail
-mboxer approve-category <proposal_id>
-mboxer reject-category <proposal_id>
+mboxer approve-category <proposal_id> --config config/mboxer.yaml
+mboxer reject-category <proposal_id> --config config/mboxer.yaml
 ```
 
 ### 6. Run a security scan
@@ -110,8 +112,9 @@ mboxer security-scan --config config/mboxer.yaml --account primary-gmail
 
 ### 1. Dry-run export
 
-Verify the output shape, category directories, and size splitting without writing the full output.
-A dry run is free and fast.
+Verify category directories, rendered sizes, and packing limits without publishing
+output. A dry run still reads and projects messages and uses temporary disk staging;
+its time and disk usage depend on the archive. See [packing limits](docs/notebooklm-limits.md).
 
 ```bash
 mboxer export notebooklm \

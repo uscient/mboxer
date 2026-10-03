@@ -44,6 +44,27 @@ def _make_attachment_mbox(path: Path) -> None:
     mbox.close()
 
 
+def test_explicit_empty_attachment_directory_uses_current_directory(
+    tmp_path, tmp_db, make_account, config, monkeypatch,
+):
+    make_account()
+    source = tmp_path / "attachment.mbox"
+    _make_attachment_mbox(source)
+    config["paths"]["attachments_dir"] = ""
+    monkeypatch.chdir(tmp_path)
+
+    counts = ingest_mbox(
+        source, db_path=tmp_db, config=config, account_key="test-gmail",
+        extract_attachments_flag=True,
+    )
+
+    assert counts["errors"] == 0
+    outputs = list((tmp_path / "test-gmail").rglob("evidence.bin"))
+    assert len(outputs) == 1
+    assert outputs[0].read_bytes() == ATTACHMENT_PAYLOAD
+    assert not (tmp_path / "data" / "attachments").exists()
+
+
 SIMPLE_MSG = textwrap.dedent("""\
     From: sender@example.com
     To: recipient@example.com

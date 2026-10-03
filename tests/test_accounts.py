@@ -9,7 +9,6 @@ from mboxer.accounts import (
     list_accounts,
     update_account,
     resolve_account,
-    ensure_default_account,
 )
 
 
@@ -104,10 +103,3 @@ def test_resolve_account_multiple_accounts(db):
     create_account(db, "personal-gmail")
     with pytest.raises(AccountError, match="--account"):
         resolve_account(db, None)
-
-
-def test_ensure_default_account(db):
-    account = ensure_default_account(db, "default-gmail")
-    assert account["account_key"] == "default-gmail"
-    account2 = ensure_default_account(db, "default-gmail")
-    assert account["id"] == account2["id"]

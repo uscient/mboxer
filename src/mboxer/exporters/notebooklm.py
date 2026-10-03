@@ -19,7 +19,14 @@ from ..naming import category_to_directory, normalize_category_path, source_pack
 from ..security.findings import ResidualFindingsBlocked, merge_counts
 from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
 from .classification import resolve_message_classification
+from .manifest import (
+    build_notebooklm_manifest_rows,
+    build_safe_export_run_metadata,
+    security_manifest_posture,
+    write_notebooklm_manifest,
+)
 from .projection import prepare_projection
+from .publication import publish_notebooklm
 
 
 def _date_band(date_utc: str | None) -> str:
@@ -351,11 +358,6 @@ def export_notebooklm(
     include_unclassified: bool = True,
     findings_policy: str | None = None,
 ) -> dict[str, Any]:
-    from .manifest import (
-        build_notebooklm_manifest_rows, security_manifest_posture, write_notebooklm_manifest,
-    )
-    from .publication import publish_notebooklm
-
     validate_account_key(account_key)
     # CLI confirmation flags govern service safety recommendations; the actual
     # configured packing limits remain mandatory for every direct API call.
@@ -416,10 +418,10 @@ def export_notebooklm(
                 return stats
 
             scrub_enabled, redaction_policy = security_manifest_posture(config)
-            manifest_rows = build_notebooklm_manifest_rows(
-                file_stats, account_key=account_key, account_display_name=account_display_name,
+            lineage: dict[str, Any] = dict(
+                account_key=account_key, account_display_name=account_display_name,
                 account_email_address=account_email, export_profile=export_profile,
-                security_profile=security_profile, created_at=now,
+                security_profile=security_profile,
                 source_database_path=db_path, source_config_path=config_path,
                 scrub_enabled=scrub_enabled, redaction_policy=redaction_policy,
                 limit_profile=limits.profile_name, limit_settings=asdict(limits),
@@ -430,18 +432,13 @@ def export_notebooklm(
                 residual_findings_total=sum(residual.values()), residual_findings_by_type=residual,
                 residual_findings_policy=policy,
             )
+            manifest_rows = build_notebooklm_manifest_rows(file_stats, **lineage, created_at=now)
             csv_path, json_path = write_notebooklm_manifest(stage_root.parent, account_key, manifest_rows)
             staged["manifest.csv"], staged["manifest.json"] = csv_path, json_path
-            metadata = _export_metadata_json(
-                config=config, limits=limits, db_path=db_path, config_path=config_path,
-                output_path=out_dir, account_key=account_key,
-                account_display_name=account_display_name, account_email_address=account_email,
-                export_profile=export_profile, effective_profile=effective_profile,
-                candidate_message_count=candidates, excluded_message_count=excluded,
-                file_count=len(file_stats), message_count=candidates - excluded,
-                warnings=warnings, residual_scan_performed=True,
-                residual_findings_total=sum(residual.values()), residual_findings_by_type=residual,
-                residual_findings_policy=policy,
+            metadata = build_safe_export_run_metadata(
+                **lineage, export_kind="notebooklm", output_path=out_dir,
+                effective_profile=effective_profile, source_count=len(file_stats),
+                message_count=candidates - excluded,
             )
             cursor = conn.execute(
                 "INSERT INTO exports "
@@ -449,7 +446,8 @@ def export_notebooklm(
                 "status, finished_at, source_count, message_count, metadata_json) "
                 "VALUES (?, 'notebooklm', ?, ?, ?, 'completed', CURRENT_TIMESTAMP, ?, ?, ?)",
                 (account_id, effective_profile, str(out_dir), limits.profile_name,
-                 len(file_stats), candidates - excluded, metadata),
+                 len(file_stats), candidates - excluded,
+                 json.dumps(metadata, ensure_ascii=False, sort_keys=True)),
             )
             export_id = cursor.lastrowid
             for stat in file_stats:
@@ -467,61 +465,3 @@ def export_notebooklm(
         if conn.in_transaction:
             conn.execute("ROLLBACK TO notebooklm_export")
             conn.execute("RELEASE notebooklm_export")
-
-
-def _export_metadata_json(
-    *,
-    config: dict[str, Any],
-    limits: NotebookLMLimits,
-    db_path: str,
-    config_path: str | None,
-    output_path: Path,
-    account_key: str,
-    account_display_name: str | None,
-    account_email_address: str | None,
-    export_profile: str | None,
-    effective_profile: str,
-    candidate_message_count: int,
-    excluded_message_count: int,
-    file_count: int,
-    message_count: int,
-    warnings: list[str] | None,
-    residual_scan_performed: bool,
-    residual_findings_total: int,
-    residual_findings_by_type: dict[str, int],
-    residual_findings_policy: str,
-) -> str:
-    from .manifest import build_safe_export_run_metadata, security_manifest_posture
-
-    scrub_enabled, redaction_policy = security_manifest_posture(config)
-    notebooklm_config = (config.get("exports") or {}).get("notebooklm") or {}
-    metadata = build_safe_export_run_metadata(
-        export_kind="notebooklm",
-        account_key=account_key,
-        account_display_name=account_display_name,
-        account_email_address=account_email_address,
-        source_database_path=db_path,
-        source_config_path=config_path,
-        output_path=output_path,
-        export_profile=export_profile,
-        effective_profile=effective_profile,
-        security_profile=default_export_profile(
-            (config.get("security") or {}).get("default_export_profile")
-        ),
-        scrub_enabled=scrub_enabled,
-        redaction_policy=redaction_policy,
-        limit_profile=limits.profile_name,
-        limit_settings=asdict(limits),
-        split_strategy=notebooklm_config.get("split_strategy") or {},
-        export_format=notebooklm_config.get("format") or {},
-        candidate_message_count=candidate_message_count,
-        excluded_message_count=excluded_message_count,
-        source_count=file_count,
-        message_count=message_count,
-        warnings=warnings,
-        residual_scan_performed=residual_scan_performed,
-        residual_findings_total=residual_findings_total,
-        residual_findings_by_type=residual_findings_by_type,
-        residual_findings_policy=residual_findings_policy,
-    )
-    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)

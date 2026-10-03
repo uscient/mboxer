@@ -8,7 +8,7 @@ The original suite passed **349 tests**, with **94.33% branch coverage** on
 Python 3.12.14. Passing tests did not cover the defects below. This audit is a
 dated observation, not an additional source of project policy.
 
-## Proposed repair groups
+## Original repair groups (completed)
 
 | Area | Verified gap | Upgrade |
 | --- | --- | --- |
@@ -23,8 +23,11 @@ dated observation, not an additional source of project policy.
 | Output paths | Arbitrary account keys could become traversal/absolute path components | Reject unsafe path components without silently renaming identities |
 | JSONL manifests | Removing two suffixes could collide with an output filename or another dated manifest | Replace only the output's final suffix |
 
-These groups are independent review proposals; this document does not imply that
-companion behavior changes have already merged.
+These repairs merged into `dev` in [#23](https://github.com/uscient/mboxer/pull/23),
+[#22](https://github.com/uscient/mboxer/pull/22), and
+[#24](https://github.com/uscient/mboxer/pull/24). The table preserves the original
+findings rather than describing outstanding defects. Ignored configuration
+placeholders were initially labeled and have since been removed from the example.
 
 ## Measured optimization
 
@@ -50,32 +53,31 @@ new findings on re-scan. These are workload-specific local measurements, not
 performance guarantees. The reusable [benchmark](performance.md) measures a
 different, explicitly described corpus with one finding per ten messages.
 
-## Remaining verified work
+## Follow-up status
 
-1. **NotebookLM publication can leave stale files.** Exporting three records,
-   then excluding all three and exporting to the same destination, leaves the
-   previous Markdown files even though the new manifest lists none. A complete
-   fix needs staged publication and ownership-aware handling of previous output;
-   deleting an arbitrary destination directory is not a safe repair. Existing
-   export directories must be reviewed before sharing.
-2. **NotebookLM limits are not uniformly enforced.** A one-source budget can
-   still produce multiple source files; an individual rendered message can
-   exceed the configured byte maximum. Packing must account for rendered
-   metadata and oversized individual messages as well as body text.
-3. **Whole-archive memory growth remains.** JSONL retains fetched rows and
-   projected records; scanning fetches all bodies. In isolated allocation
-   measurements with 2,053-character bodies, JSONL peaked near 7.6/24.0/90.2 MiB
-   at 1k/4k/16k records; scanning near 2.1/8.3/33.4 MiB. A streaming design must
-   preserve the current block-before-publication behavior for residual findings.
-4. **Scanning is limited.** Regex detection and scrubbing concern body text;
-   metadata, attachments and malware are not covered by those guarantees.
-5. **Release controls require separate verification.** Publishing is triggered
-   by a published GitHub Release and uses PyPI OIDC with the `pypi` environment.
-   Source inspection alone cannot establish environment reviewer settings,
-   signed-tag policy or current PyPI Trusted Publisher administration.
-6. **Older agent setup material remains.** Optional prompts and setup notes
-   still contain historical future-integration context. They do not constitute
-   implementation evidence or an instruction to expand this maintenance work.
+[#25](https://github.com/uscient/mboxer/pull/25) subsequently merged the remaining
+NotebookLM publication, packing, and body-memory repairs into `dev`:
 
-The priority after these repair groups is reliable NotebookLM publication and
-packing, followed by archive-scale memory work supported by measurements.
+- Managed generations are staged before publication; prior manifest ownership
+  controls stale-pack removal. Handled failures restore previous output.
+- Packing counts complete rendered text and UTF-8 bytes and enforces the source
+  budget. Dry runs use the same packing calculation.
+- JSONL and NotebookLM use disk-backed staging; security scanning iterates body
+  rows. [Memory measurements](export-memory.md) document the workload and limits.
+
+The cleanup pass removes historical agent setup packs, speculative prompts, and
+unused configuration scaffolding. AGENTS.md is now navigation and PROJECT.md
+maps the current implementation.
+
+## Remaining limitations
+
+- **Scanning coverage:** body regex detection does not cover sensitive metadata,
+  attachments, or malware. `reviewed` does not enforce human-review state.
+- **Recovery boundaries:** handled errors are tested, but process termination,
+  power loss, and concurrent publication need the operational care described in
+  [publication behavior](notebooklm-limits.md).
+- **Archive scaling:** staging trades temporary disk and I/O for lower body
+  memory use. The largest message, thread processing, and configured source
+  budget still matter; the measured workloads do not prove all archives fit.
+- **Release administration:** source inspection does not verify environment
+  reviewers, signed-tag policy, or PyPI Trusted Publisher settings.

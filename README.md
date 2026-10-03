@@ -1,6 +1,6 @@
 # mboxer
 
-Create **NotebookLM-ready Markdown source packs** from **Gmail MBOX exports**, with local SQLite, JSONL, and CSV outputs for search, RAG, archive review, and LLM workflows.
+Create **NotebookLM-ready Markdown source packs** from **Gmail MBOX exports**, with local SQLite storage, JSONL exports, and CSV/JSON manifests for search, RAG, and archive review.
 
 `mboxer` is a local-first email archive processor designed around a common problem:
 
@@ -81,13 +81,12 @@ Markdown is the primary output format.
 Each exported file preserves useful email context:
 
 - subject
-- sender and recipients
-- date
-- thread hints
-- category
-- source account
-- cleaned body text
-- attachment references
+- sender, date, and message ID
+- category and source account in the pack header
+- body text after the selected export projection
+
+Recipient lists and attachment references remain in SQLite; the current
+NotebookLM renderer does not include them in Markdown packs.
 
 Export output is split by category, year, and size band to respect NotebookLM source limits.
 A CSV manifest (`manifest.csv`) and JSON manifest (`manifest.json`) are written under
@@ -125,17 +124,10 @@ Each line represents one message with clean body text, metadata, and classificat
 Account key is injected into the output path automatically to keep multi-account exports separated,
 and a `<name>.manifest.json` is written alongside the JSONL file.
 
-### External API/import handoff
+### Other output formats
 
-No external API delivery is implemented today. Future configurable API exports should use explicit safe projections and configured intake routes, not direct SQLite sharing or hard-coded downstream services.
-
-NotebookLM Markdown and JSONL remain standalone outputs. Optional raw custody handoff, if ever added, should be explicit opt-in, default off, and separate from safer export paths.
-
-### CSV exports
-
-A row-per-message CSV export (for spreadsheet review, filtering, auditing, and manual cleanup) is
-planned and not yet implemented. Note that export **manifests** are already written as CSV today
-(`manifest.csv`); the planned feature is a separate CSV export of message data itself.
+Row-per-message CSV export and external API delivery are not implemented. CSV
+manifests describe exported source packs; they are not message-data exports.
 
 ## Current implementation status
 
@@ -168,13 +160,9 @@ Implemented:
 - YAML config loading with deep (dotted) key access
 - `pyproject.toml` packaging with an optional `dev` extra; version derived from git tags via setuptools-scm
 
-In progress / planned:
-
-- CSV export
-- LLM-based classification via Ollama (config shape is present, wiring is not complete)
-- local web UI for category review
-- incremental export tracking
-- scrub profiles for PII redaction before cloud upload
+Not implemented: LLM classification, automatic category proposals, a web UI,
+row-per-message CSV, and external delivery. The application currently uses
+explicit local commands for ingest, classification, scanning, and export.
 
 ## Project identity
 
@@ -189,56 +177,10 @@ Python requires:   >=3.11 (tested on 3.11 and 3.12)
 Versioning:        git tags via setuptools-scm
 ```
 
-## Source layout
+## Implementation
 
-```text
-src/mboxer/
-  cli.py              # argparse CLI: all subcommands
-  config.py           # YAML config loading, path helpers
-  ingest.py           # MBOX ingest pipeline
-  normalize.py        # message normalization and body extraction
-  classify.py         # rule-based classification (message + thread)
-  taxonomy.py         # category management and proposal workflow
-  accounts.py         # account CRUD and resolution
-  attachments.py      # attachment extraction and storage
-  limits.py           # NotebookLM limit profiles and validation
-  naming.py           # slugify and category path normalization
-  records.py          # row/address decoding helpers
-  db/
-    schema.sql        # reference schema snapshot (validated in CI)
-    schema.py         # init_db: applies versioned migrations
-    migrations/       # versioned schema migrations (the DB is built from these)
-  exporters/
-    notebooklm.py     # Markdown source pack exporter
-    jsonl.py          # JSONL exporter
-    projection.py     # applies export content profile to each record
-    manifest.py       # CSV + JSON manifest writer
-  security/
-    scan.py           # security scan runner
-    scrub.py          # scrub hooks
-    detectors.py      # regex detector registry
-    findings.py       # residual-findings export gate
-    policy.py         # export profile / findings policy helpers
-
-src/mboxer/defaults.yaml  # single bundled configuration example
-
-tests/
-  test_accounts.py
-  test_classify.py
-  test_config.py
-  test_db.py
-  test_export.py
-  test_first_run.py
-  test_ingest.py
-  test_limits.py
-  test_manifest.py
-  test_migration.py
-  test_naming.py
-  test_normalize.py
-  test_scrub_export.py
-  test_taxonomy.py
-  test_thread_classify.py
-```
+[PROJECT.md](PROJECT.md) maps the source modules, shared components, and tests.
+[Architecture](docs/architecture.md) describes data flow and storage boundaries.
 
 ## Quick start
 
@@ -352,7 +294,8 @@ mboxer export notebooklm \
 > 3. Review the generated exports locally before uploading anything to a cloud service.
 >
 > `--resume` makes ingest restartable, but a full ingest of a large archive still takes
-> significant time and disk space. Running `--dry-run` on exports is free and fast.
+> significant time and disk space. Export `--dry-run` performs the same projection and packing work using temporary
+> staging, without publishing output or recording export rows.
 
 ## Getting a Gmail MBOX file
 
@@ -425,10 +368,9 @@ Runtime commands accept two common flags (`config-example` only prints the bundl
 
 Print the canonical example with `mboxer config-example`; its source is
 `src/mboxer/defaults.yaml`. It covers ingest batch size, classification rules, locked taxonomy,
-security/redaction policy, NotebookLM limit profiles, and JSONL options. Legacy placeholders
-are explicitly marked ignored or reserved. They do not enable functionality. In particular,
-attachment scanning/quarantine and LLM classification are not implemented; ingest resume
-and attachment extraction use CLI flags. NotebookLM `format` and `split_strategy` settings
+security/redaction policy, NotebookLM limit profiles, and JSONL options. Unimplemented
+placeholder settings have been removed from the example; old copies remain ignored.
+Ingest resume and attachment extraction use CLI flags. NotebookLM `format` and `split_strategy` settings
 are descriptive manifest metadata, not configurable behavior. There is no environment-variable
 configuration support.
 
@@ -526,7 +468,8 @@ They are defined in the bundled example (`mboxer config-example`).
 
 Use `ultra_safe` as the default for large NotebookLM-oriented workflows where you want to preserve headroom for manual sources, attachments, PDFs, and later additions.
 
-Any field of the selected limit profile can be overridden on the CLI:
+Source, word, and byte limits can be overridden on the CLI;
+`max_messages_per_source` is configured in YAML:
 
 ```bash
 mboxer export notebooklm \
@@ -551,7 +494,7 @@ that, from `security.default_export_profile` (the example config uses `scrubbed`
 
 | Profile | Effect on the exported body |
 |---|---|
-| `raw` | Full body text, unchanged. Local use only. |
+| `raw` | Full body text, unchanged. Output is local; upload restrictions are not enforced. |
 | `reviewed` | Treated like `scrubbed` today: redaction passes are applied. |
 | `scrubbed` | Sensitive patterns redacted per `security.redact_*` policy. |
 | `metadata-only` | Body text dropped; only headers/metadata are exported. |
@@ -570,13 +513,12 @@ happens if detected-sensitive patterns survive:
 
 - `allow` — write the export; record residual counts in the manifest.
 - `warn` — write the export, record counts, and print a counts-only warning.
-- `block` — abort **before any files are written**; the command exits with status `2`.
+- `block` — abort before publishing output or export ledger rows; the command exits
+  with status `2`. Temporary staging may have been written and is cleaned up.
 
 ## Classification strategy
 
-Classification runs in two passes.
-
-**Rule-based** (deterministic, no network required):
+Classification uses deterministic rules, with no network calls.
 
 Rules match on sender domain, sender address fragment, and subject keywords.
 Each rule assigns a `category_path`, `sensitivity`, `notebooklm_priority`, and `export_profile`.
@@ -588,12 +530,10 @@ Rules support two assignment modes:
 - `assign` — confident match, confidence 1.0
 - `assign_hint` — soft match, confidence 0.75
 
-**LLM-based** (optional, local-first):
+Classification can be scoped by account and run at `message` or `thread` level.
+`classification.level` sets the default (bundled value: `thread`); `--level` takes
+precedence. An invalid configured level is an error before classification:
 
-Config accepts an Ollama endpoint and model name.
-LLM classification is wired in the config shape and CLI but is not yet fully connected to the pipeline.
-
-Classification can be scoped by account and run at `message` or `thread` level:
 
 ```bash
 mboxer classify --level thread --account primary-gmail
@@ -618,7 +558,9 @@ noise/spam
 
 Locked categories are defined in config and cannot be deleted.
 
-The classifier can propose new categories. Proposals appear in `review-categories` and require explicit approval before being used in exports:
+Proposal review and approval are implemented, but rule classification does not
+generate proposals. Existing pending database proposals appear in
+`review-categories`; approval creates or activates their category:
 
 ```bash
 mboxer approve-category <proposal_id>
@@ -629,7 +571,8 @@ mboxer reject-category <proposal_id>
 
 `mboxer` assumes mail archives contain sensitive material.
 
-Raw exports are local-only by default.
+All exporters write local files. A `raw` export retains sensitive body text;
+there is no upload or destination enforcement.
 
 The security pipeline:
 
@@ -638,9 +581,9 @@ ingest
   → normalize
   → classify
   → security-scan
-  → scrub
-  → review
-  → export
+  → export projection and scrubbing
+  → residual findings check
+  → local files
 ```
 
 The `security` config block controls the default content posture, the residual-findings gate, and
@@ -767,9 +710,9 @@ Expected — Gmail archives can be many GB. Slice a small `.mbox` first, use `--
 shape with `mboxer export notebooklm --dry-run` before a real export.
 
 **Does classification use an LLM?**
-Not yet. Classification is deterministic rule matching today. The Ollama config block and the
-`classify --model` flag exist, but LLM classification is not wired into the pipeline (the flag prints
-a "not yet implemented" notice).
+No. Classification uses deterministic rules. The unused Ollama configuration
+example and `classify --model` placeholder have been removed; `--model` is now
+rejected instead of silently running rule classification.
 
 ## Releases
 

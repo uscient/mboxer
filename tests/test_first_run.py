@@ -1,5 +1,5 @@
 """First-run workflow tests: synthetic fixture ingest, CLI account commands,
-Ollama model resolution, account-scoped paths, and thread-level classification."""
+account-scoped paths and thread-level classification."""
 import sqlite3
 import subprocess
 import sys
@@ -9,7 +9,7 @@ import pytest
 
 from mboxer.accounts import create_account
 from mboxer.classify import run_rule_classification
-from mboxer.config import OllamaConfigError, load_config, resolve_ollama_model
+from mboxer.config import load_config
 from mboxer.db import init_db
 from mboxer.exporters.notebooklm import export_notebooklm
 from mboxer.ingest import ingest_mbox
@@ -210,60 +210,3 @@ def test_notebooklm_dry_run_synthetic(tmp_path, db_primary):
         conn.close()
     assert stats["dry_run"] is True
     assert not (tmp_path / "out").exists()
-
-
-# ── Ollama model resolution ───────────────────────────────────────────────────
-
-def test_ollama_model_from_config():
-    config = load_config(EXAMPLE_CONFIG_PATH)
-    model = resolve_ollama_model(config, role="classifier")
-    assert model == "llama3.1:8b"
-
-
-def test_ollama_model_cli_override():
-    config = load_config(EXAMPLE_CONFIG_PATH)
-    model = resolve_ollama_model(config, role="classifier", cli_model="mistral:7b")
-    assert model == "mistral:7b"
-
-
-def test_ollama_model_role_specific():
-    config = {
-        "classification": {
-            "ollama": {
-                "default_model": "llama3.1:8b",
-                "models": {"summarizer": "phi3:mini"},
-            }
-        }
-    }
-    assert resolve_ollama_model(config, role="summarizer") == "phi3:mini"
-    assert resolve_ollama_model(config, role="classifier") == "llama3.1:8b"
-
-
-def test_ollama_model_fallback_to_default():
-    config = {
-        "classification": {
-            "ollama": {
-                "default_model": "llama3.1:8b",
-                "models": {},
-            }
-        }
-    }
-    assert resolve_ollama_model(config, role="taxonomy_manager") == "llama3.1:8b"
-
-
-def test_ollama_model_missing_raises():
-    config = {"classification": {"ollama": {}}}
-    with pytest.raises(OllamaConfigError, match="No Ollama model configured"):
-        resolve_ollama_model(config, role="classifier")
-
-
-def test_ollama_precedence_cli_beats_config():
-    config = {
-        "classification": {
-            "ollama": {
-                "default_model": "llama3.1:8b",
-                "models": {"classifier": "phi3:mini"},
-            }
-        }
-    }
-    assert resolve_ollama_model(config, role="classifier", cli_model="gemma2:9b") == "gemma2:9b"

@@ -1,61 +1,17 @@
-project:
-  name: mboxer
-  repo: uscient/mboxer
-  default_database: var/mboxer.sqlite
-
-# Account settings.
-# Use: mboxer account add <account-key> --email <address>
-# Default behavior operates on one account at a time.
-# Cross-account operations must be explicit via --accounts key1,key2.
-accounts:
-  # NOTE: account resolution is currently built-in, not driven by these keys.
-  # One account -> auto-selected; multiple accounts -> --account is required.
-  # The keys below are reserved placeholders and are not read by the code yet.
-  default_account: null      # reserved (not yet wired)
-  require_account: true       # reserved (not yet wired)
-
+# Runtime settings. CLI path/limit overrides take precedence.
+# Account selection is explicit when multiple accounts exist.
 paths:
   database: var/mboxer.sqlite
-  mbox_dir: data/mboxes
   attachments_dir: data/attachments
-  exports_dir: exports
   notebooklm_dir: exports/notebooklm
-  rag_dir: exports/rag
-  manifests_dir: exports/manifests
-  logs_dir: var/log
 
 ingest:
   batch_commit_size: 500
-  resume: true             # ignored: use --resume
-  extract_attachments: true  # ignored: use --extract-attachments
-  store_body_text: true    # ignored: normalized body text is always stored
   store_body_html: false
   max_body_chars: 50000
-  # Ignored: deduplication follows the database identity constraints.
-  dedupe_by:
-    - message_id
-    - body_hash
 
 classification:
-  provider: rules          # reserved: only rule classification is implemented
-  level: thread            # ignored: select with --level message|thread
-  # Reserved placeholders below; no LLM classification or proposal generation.
-  prompt_version: classifier-v1
-  confidence_review_threshold: 0.70
-  allow_category_proposals: true
-  require_review_for_new_categories: true
-  # Only default_model and models are used for model-name resolution today.
-  ollama:
-    host: http://localhost:11434
-    default_model: llama3.1:8b
-    timeout_seconds: 60
-    temperature: 0
-    num_ctx: 8192
-    models:
-      classifier: llama3.1:8b
-      summarizer: llama3.1:8b
-      taxonomy_manager: llama3.1:8b
-      security_reviewer: llama3.1:8b
+  level: thread  # message | thread; --level overrides this default
 
 # Category paths are slash-delimited and later become directories.
 taxonomy:
@@ -109,7 +65,7 @@ rules:
       export_profile: scrubbed
 
   - name: obvious-utility-bill
-    description: Catch obvious utility/payment statement emails before LLM classification.
+    description: Catch obvious utility/payment statement emails with deterministic rules.
     match:
       subject_contains:
         - bill
@@ -127,13 +83,10 @@ security:
   scan_enabled: true
   scrub_enabled: true
   on_residual_findings: warn  # allow | warn | block
-  scan_attachments: true          # ignored: attachment scanning is not implemented
-  quarantine_unsafe_attachments: true  # ignored: quarantine is not implemented
   redact_email_addresses: true
   redact_phone_numbers: true
   redact_ssn_like_numbers: true
   redact_credit_card_like_numbers: true
-  # reserved/planned detectors (not yet implemented): physical_addresses
 
 exports:
   notebooklm:
@@ -141,7 +94,7 @@ exports:
     profile: ultra_safe
 
     profiles:
-      standard:
+      standard: &standard_limits
         max_sources: 50
         reserved_sources: 10
         target_sources: 40
@@ -152,34 +105,22 @@ exports:
         max_messages_per_source: 5000
 
       plus:
+        <<: *standard_limits
         max_sources: 100
         reserved_sources: 20
         target_sources: 80
-        max_words_per_source: 450000
-        target_words_per_source: 300000
-        max_bytes_per_source: 190000000
-        target_bytes_per_source: 100000000
-        max_messages_per_source: 5000
 
       pro:
+        <<: *standard_limits
         max_sources: 300
         reserved_sources: 50
         target_sources: 250
-        max_words_per_source: 450000
-        target_words_per_source: 300000
-        max_bytes_per_source: 190000000
-        target_bytes_per_source: 100000000
-        max_messages_per_source: 5000
 
       ultra:
+        <<: *standard_limits
         max_sources: 600
         reserved_sources: 75
         target_sources: 525
-        max_words_per_source: 450000
-        target_words_per_source: 300000
-        max_bytes_per_source: 190000000
-        target_bytes_per_source: 100000000
-        max_messages_per_source: 5000
 
       ultra_safe:
         max_sources: 600
@@ -211,8 +152,5 @@ exports:
       split_oversized_threads: true
 
   jsonl:
-    enabled: true              # ignored: the export CLI selects the operation
     output_file: exports/rag/messages.jsonl
-    include_clean_body: true   # ignored: body projection follows export_profile
-    include_raw_metadata: true # ignored: metadata projection follows export_profile
     include_classification: true

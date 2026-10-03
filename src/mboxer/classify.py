@@ -9,8 +9,20 @@ from .naming import normalize_category_path
 from .records import decode_address_fields
 
 
-def _load_rules(config: dict[str, Any]) -> list[dict[str, Any]]:
-    return config.get("rules", [])
+def _assignment_values(rule: dict[str, Any], assign_key: str) -> dict[str, Any] | None:
+    """Resolve policy metadata identically for direct, thread, and inherited rules."""
+    assign = rule.get(assign_key, {})
+    if not assign or not assign.get("category_path"):
+        return None
+    return {
+        "category_path": normalize_category_path(assign["category_path"]),
+        "sensitivity": assign.get("sensitivity"),
+        "notebooklm_priority": assign.get("notebooklm_priority"),
+        "export_profile": assign.get("export_profile"),
+        "classifier_type": "rule" if assign_key == "assign" else "rule_hint",
+        "classifier_name": rule.get("name"),
+        "confidence": 1.0 if assign_key == "assign" else 0.75,
+    }
 
 
 def _match_rule(rule: dict[str, Any], record: dict[str, Any]) -> bool:
@@ -42,14 +54,9 @@ def _apply_assignment(
     assign_key: str,
     account_id: int | None,
 ) -> None:
-    assign = rule.get(assign_key, {})
-    if not assign:
+    assignment = _assignment_values(rule, assign_key)
+    if assignment is None:
         return
-    category_path = assign.get("category_path")
-    if not category_path:
-        return
-    category_path = normalize_category_path(category_path)
-    classifier_type = "rule" if assign_key == "assign" else "rule_hint"
 
     conn.execute(
         """
@@ -63,16 +70,10 @@ def _apply_assignment(
            :classifier_type, :classifier_name, :confidence)
         """,
         {
+            **assignment,
             "account_id": account_id,
             "msg_id": record["id"],
             "thread_key": record.get("thread_key"),
-            "category_path": category_path,
-            "sensitivity": assign.get("sensitivity"),
-            "notebooklm_priority": assign.get("notebooklm_priority"),
-            "export_profile": assign.get("export_profile"),
-            "classifier_type": classifier_type,
-            "classifier_name": rule.get("name"),
-            "confidence": 1.0 if assign_key == "assign" else 0.75,
         },
     )
 
@@ -162,15 +163,9 @@ def _store_thread_classification(
     assign_key: str,
     account_id: int | None,
 ) -> None:
-    assign = rule.get(assign_key, {})
-    if not assign:
+    assignment = _assignment_values(rule, assign_key)
+    if assignment is None:
         return
-    category_path = assign.get("category_path")
-    if not category_path:
-        return
-    category_path = normalize_category_path(category_path)
-    classifier_type = "rule" if assign_key == "assign" else "rule_hint"
-    confidence = 1.0 if assign_key == "assign" else 0.75
 
     raw = {
         "participants": thread_input.get("_participants", []),
@@ -194,15 +189,9 @@ def _store_thread_classification(
            'rules-v1', :summary, :raw_output_json)
         """,
         {
+            **assignment,
             "account_id": account_id,
             "thread_key": thread_input["thread_key"],
-            "category_path": category_path,
-            "sensitivity": assign.get("sensitivity"),
-            "notebooklm_priority": assign.get("notebooklm_priority"),
-            "export_profile": assign.get("export_profile"),
-            "classifier_type": classifier_type,
-            "classifier_name": rule.get("name"),
-            "confidence": confidence,
             "summary": f"Thread classified by rule: {rule.get('name', '')}",
             "raw_output_json": json.dumps(raw),
         },
@@ -217,14 +206,10 @@ def _inherit_to_messages(
     assign_key: str,
     message_ids: list[int],
 ) -> int:
-    assign = rule.get(assign_key, {})
-    if not assign:
+    assignment = _assignment_values(rule, assign_key)
+    if assignment is None:
         return 0
-    category_path = assign.get("category_path")
-    if not category_path:
-        return 0
-    category_path = normalize_category_path(category_path)
-    thread_confidence = 1.0 if assign_key == "assign" else 0.75
+    thread_confidence = assignment["confidence"]
 
     inherited = 0
     for msg_id in message_ids:
@@ -261,15 +246,10 @@ def _inherit_to_messages(
                'rule_inherited', :classifier_name, :confidence, 'rules-v1')
             """,
             {
+                **assignment,
                 "account_id": account_id,
                 "msg_id": msg_id,
                 "thread_key": thread_key,
-                "category_path": category_path,
-                "sensitivity": assign.get("sensitivity"),
-                "notebooklm_priority": assign.get("notebooklm_priority"),
-                "export_profile": assign.get("export_profile"),
-                "classifier_name": rule.get("name"),
-                "confidence": thread_confidence,
             },
         )
         inherited += 1
@@ -283,7 +263,7 @@ def _run_rule_classification_thread(
     *,
     account_id: int | None = None,
 ) -> dict[str, int | str]:
-    rules = _load_rules(config)
+    rules = config.get("rules", [])
     if not rules:
         print("No rules defined in config.")
         return {"classified": 0, "skipped": 0, "level": "thread"}
@@ -405,7 +385,7 @@ def run_rule_classification(
     if level == "thread":
         return _run_rule_classification_thread(conn, config, account_id=account_id)
 
-    rules = _load_rules(config)
+    rules = config.get("rules", [])
     if not rules:
         print("No rules defined in config.")
         return {"classified": 0, "skipped": 0}

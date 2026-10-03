@@ -160,12 +160,3 @@ def resolve_account(
         f"{command} requires --account when multiple accounts exist.\n"
         f"Available: {keys}"
     )
-
-
-def ensure_default_account(conn: sqlite3.Connection, account_key: str = "default") -> dict[str, Any]:
-    """Create a default account for legacy data migration if it doesn't exist."""
-    existing = get_account(conn, account_key)
-    if existing:
-        return existing
-    create_account(conn, account_key, display_name="Default (legacy migration)")
-    return get_account(conn, account_key)  # type: ignore[return-value]

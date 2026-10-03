@@ -2,24 +2,20 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from .. import __version__
 from ..accounts import validate_account_key
+from ..files import sha256_file
 from ..security.detectors import active_detector_descriptors
+from ..security.patterns import REDACTION_RULES
 from ..security.policy import default_export_profile
 
 MANIFEST_SCHEMA_VERSION = "1"
 TOOL_NAME = "mboxer"
-REDACTION_POLICY_KEYS = (
-    "redact_email_addresses",
-    "redact_phone_numbers",
-    "redact_ssn_like_numbers",
-    "redact_credit_card_like_numbers",
-)
+REDACTION_POLICY_KEYS = tuple(rule.config_key for rule in REDACTION_RULES)
 
 MANIFEST_FIELDS = [
     "manifest_schema_version",
@@ -78,14 +74,6 @@ def _compact_json(value: Any) -> str:
     return json.dumps(value or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def safe_lineage_path(path: str | Path | None) -> str:
     """Return a safe lineage path reference without absolute local directories."""
     if not path:
@@ -94,10 +82,6 @@ def safe_lineage_path(path: str | Path | None) -> str:
     if p.is_absolute() or (p.parts and p.parts[0] == ".."):
         return p.name
     return p.as_posix()
-
-
-def _safe_manifest_path(path: str | Path | None) -> str:
-    return safe_lineage_path(path)
 
 
 def security_manifest_posture(config: dict[str, Any]) -> tuple[bool, dict[str, bool]]:
@@ -227,8 +211,8 @@ def _base_lineage_fields(
         "account_email_address_present": bool(account_email_address),
         "source_database_present": bool(source_database_path),
         "source_config_present": bool(source_config_path),
-        "source_database_path": _safe_manifest_path(source_database_path),
-        "source_config_path": _safe_manifest_path(source_config_path),
+        "source_database_path": safe_lineage_path(source_database_path),
+        "source_config_path": safe_lineage_path(source_config_path),
         "export_profile": export_profile or "",
         "export_profile_override": export_profile or "",
         "security_profile": safe_security_profile,
@@ -308,10 +292,10 @@ def build_notebooklm_manifest_rows(
         rows.append({
             **base_fields,
             "source_file": fpath.name,
-            "source_path": _safe_manifest_path(fpath),
+            "source_path": safe_lineage_path(fpath),
             "generated_file": fpath.name,
-            "generated_path": _safe_manifest_path(fpath),
-            "generated_sha256": stat.get("sha256") or _sha256_file(fpath),
+            "generated_path": safe_lineage_path(fpath),
+            "generated_sha256": stat.get("sha256") or sha256_file(fpath),
             "category_path": stat.get("category_path", ""),
             "date_band": stat.get("date_band", ""),
             "source_pack": fpath.name,
@@ -387,10 +371,10 @@ def build_jsonl_manifest_rows(
     return [{
         **base_fields,
         "source_file": out_path.name,
-        "source_path": _safe_manifest_path(out_path),
+        "source_path": safe_lineage_path(out_path),
         "generated_file": out_path.name,
-        "generated_path": _safe_manifest_path(out_path),
-        "generated_sha256": _sha256_file(out_path) if out_path.exists() else "",
+        "generated_path": safe_lineage_path(out_path),
+        "generated_sha256": sha256_file(out_path) if out_path.exists() else "",
         "category_path": "",
         "date_band": "",
         "source_pack": out_path.name,

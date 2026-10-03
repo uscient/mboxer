@@ -1,4 +1,4 @@
-# SQLite Schema Plan
+# SQLite schema
 
 The runtime database is built by applying the versioned migrations in `src/mboxer/db/migrations/`
 (run by `mboxer init-db`). `src/mboxer/db/schema.sql` is a reference snapshot of the full schema —
@@ -39,7 +39,7 @@ category_aliases / category_rules
   Alternate names and stored rule definitions for the taxonomy.
 
 classifications
-  Rule (and future model) output for message or thread classification.
+  Rule output and stored classification records for messages or threads.
 
 category_proposals
   Proposed taxonomy additions pending review.

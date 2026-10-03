@@ -43,3 +43,18 @@ variation before inferring improvements. Hosted-runner timing is informational;
 there is no arbitrary elapsed-time gate. Counts and integrity remain mandatory.
 For meaningful archive-scale measurements, increase `--messages` on the intended
 local machine before changing memory layout, queries or batching defaults.
+
+## Consolidation measurements (2026-10-03)
+
+The cleanup was compared with `dev` at `4259676` on Linux / Python 3.12.14,
+using 4,000 synthetic messages and three fresh-process repetitions per revision.
+Median ingest was 0.748 → 0.745 seconds; JSONL was 3.681 → 3.689 seconds.
+All count/integrity checks passed and output byte counts matched. This supports
+behavior preservation, not a material end-to-end throughput improvement.
+
+The regex detector now counts matches with an iterator instead of retaining
+every match string. For `"synthetic@example.test " * 100_000`, peak traced Python
+allocation during `RegexDetector().detect(text)` fell from 7,102,410 to 2,364
+bytes with identical findings, count, and excerpt. The input was allocated before
+`tracemalloc.start()`. This isolated measurement concerns match storage; it does
+not include the input body or establish constant memory for the entire archive.
