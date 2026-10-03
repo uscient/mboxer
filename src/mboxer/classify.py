@@ -228,6 +228,14 @@ def _inherit_to_messages(
 
     inherited = 0
     for msg_id in message_ids:
+        # A force ingest keeps untouched messages' inherited policies until a
+        # fresh thread result exists. Retire the previous inheritance inside
+        # the thread savepoint even when an explicit message rule now wins.
+        conn.execute(
+            "DELETE FROM classifications WHERE message_db_id = ? AND account_id IS ?"
+            " AND classifier_type = 'rule_inherited'",
+            (msg_id, account_id),
+        )
         # Preserve explicit message-level classifications with equal or higher confidence.
         row = conn.execute(
             """
@@ -239,14 +247,6 @@ def _inherit_to_messages(
         ).fetchone()
         existing = row[0] if row else None
         if existing is not None and existing >= thread_confidence:
-            continue
-
-        # Idempotency: skip if this message already has an inherited classification.
-        if conn.execute(
-            "SELECT id FROM classifications WHERE message_db_id = ? AND account_id IS ?"
-            " AND classifier_type = 'rule_inherited'",
-            (msg_id, account_id),
-        ).fetchone():
             continue
 
         conn.execute(
@@ -287,6 +287,12 @@ def _run_rule_classification_thread(
     if not rules:
         print("No rules defined in config.")
         return {"classified": 0, "skipped": 0, "level": "thread"}
+
+    # Keep the evidence read and policy writes in one SQLite snapshot. A
+    # concurrent source replacement must cause a stale-snapshot write failure,
+    # never attach a policy computed from old content to a reused message ID.
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
 
     # Find distinct thread_keys that don't yet have a thread-level rule classification.
     # Use IS for null-safe account_id comparison in the join.
@@ -363,13 +369,20 @@ def _run_rule_classification_thread(
                     "assign_hint" if "assign_hint" in rule else None
                 )
                 if assign_key:
-                    _store_thread_classification(
-                        conn, thread_input, rule, assign_key, rec_account_id
-                    )
-                    msg_ids = [m["id"] for m in messages]
-                    _inherit_to_messages(
-                        conn, thread_key, rec_account_id, rule, assign_key, msg_ids
-                    )
+                    conn.execute("SAVEPOINT thread_classification")
+                    try:
+                        _store_thread_classification(
+                            conn, thread_input, rule, assign_key, rec_account_id
+                        )
+                        msg_ids = [m["id"] for m in messages]
+                        _inherit_to_messages(
+                            conn, thread_key, rec_account_id, rule, assign_key, msg_ids
+                        )
+                        conn.execute("RELEASE thread_classification")
+                    except BaseException:
+                        conn.execute("ROLLBACK TO thread_classification")
+                        conn.execute("RELEASE thread_classification")
+                        raise
                     matched = True
                     break
 

@@ -15,6 +15,21 @@ def test_normalize_date_none():
     assert normalize_date("") is None
 
 
+def test_normalize_date_sorts_in_utc_across_offset_and_day_boundaries():
+    earlier = normalize_date("Mon, 1 Jan 2024 01:30:00 +0200")
+    later = normalize_date("Mon, 1 Jan 2024 01:00:00 +0000")
+    assert earlier == "2023-12-31T23:30:00+00:00"
+    assert later == "2024-01-01T01:00:00+00:00"
+    assert earlier < later
+
+
+def test_date_with_unknown_offset_preserves_header_without_inventing_utc():
+    raw_date = "Mon, 1 Jan 2024 01:30:00 -0000"
+    record = normalize_message(email.message_from_string(f"Date: {raw_date}\n\nSynthetic body"), 1, "0")
+    assert record["date_header"] == raw_date
+    assert record["date_utc"] is None
+
+
 def test_body_hash_deterministic():
     h1 = compute_body_hash("hello world")
     h2 = compute_body_hash("hello world")

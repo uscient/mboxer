@@ -267,7 +267,9 @@ def test_address_invariant_migration_preserves_valid_messages(tmp_path):
     conn.commit()
     conn.close()
 
-    assert apply_migrations(db_path) == ["003_address_invariant"]
+    assert apply_migrations(db_path) == [
+        "003_address_invariant", "004_account_source_identity", "005_evidence_lookup_indexes",
+    ]
 
     conn = sqlite3.connect(db_path)
     try:

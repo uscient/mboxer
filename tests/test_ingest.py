@@ -609,8 +609,8 @@ def test_force_replaces_message_level_export_and_security_evidence(tmp_path, con
     assert export_runs == 1
 
 
-def test_force_thread_classification_preserved(tmp_path, config, db_with_account):
-    """Thread-level classifications are NOT deleted on force; re-classify refreshes them."""
+def test_force_thread_classification_invalidated(tmp_path, config, db_with_account):
+    """Derived classifications must be rebuilt from the replacement evidence."""
     mbox_path = tmp_path / "test.mbox"
     _make_mbox(mbox_path, [SIMPLE_MSG])
     ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
@@ -638,7 +638,7 @@ def test_force_thread_classification_preserved(tmp_path, config, db_with_account
     ).fetchone()[0]
     conn.close()
 
-    assert thread_clf == 1
+    assert thread_clf == 0
 
 
 def test_normal_ingest_idempotent_after_force(tmp_path, config, db_with_account):
@@ -708,7 +708,7 @@ def test_empty_mbox_completes_cleanly(tmp_path, config, db_with_account):
 
     counts = ingest_mbox(mbox_path, config=config, db_path=db_with_account, account_key="test-gmail")
 
-    assert counts == {"seen": 0, "inserted": 0, "skipped": 0, "replaced": 0, "errors": 0}
+    assert counts == {"seen": 0, "inserted": 0, "skipped": 0, "replaced": 0, "errors": 0, "status": "completed"}
     conn = sqlite3.connect(db_with_account)
     status = conn.execute("SELECT status FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
     conn.close()

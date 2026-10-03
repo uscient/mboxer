@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import UTC
 from email.header import decode_header
 from email.message import Message
 from email.utils import parseaddr, parsedate_to_datetime
@@ -42,8 +43,10 @@ def normalize_date(date_str: str | None) -> str | None:
         return None
     try:
         dt = parsedate_to_datetime(date_str)
-        return dt.isoformat()
-    except Exception:
+        # A missing/unknown offset is not evidence of UTC. Keep its raw header
+        # and leave the sortable UTC field absent instead of using local time.
+        return dt.astimezone(UTC).isoformat() if dt.tzinfo is not None else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -101,7 +104,7 @@ def _count_attachments(msg: Message) -> int:
     count = 0
     for part in msg.walk():
         cd = (part.get_content_disposition() or "").lower()
-        if "attachment" in cd:
+        if "attachment" in cd or part.get_filename() is not None:
             count += 1
     return count
 
@@ -164,7 +167,7 @@ def normalize_message(msg: Message, source_id: int, mbox_key: str, account_id: i
         "date_header": date_header or None,
         "date_utc": date_utc,
         "body_text": body_text,
-        "body_html": None,
+        "body_html": html,
         "body_hash": body_hash,
         "body_chars": body_chars,
         "body_word_count": body_word_count,

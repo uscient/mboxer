@@ -134,16 +134,26 @@ def extract_attachments(
         storage_path: str | None = None
         extraction_status = "pending"
         error_message: str | None = None
+        dest: Path | None = None
+        dest_created = False
 
         if extract_to_disk and payload:
             try:
                 dest = _resolve_storage_path(
                     attachments_dir, account_key, year, msg_slug, safe_filename
                 )
-                dest.write_bytes(payload)
+                # Exclusive creation protects a path selected before another
+                # extractor wrote it. Cleanup must only remove our own file.
+                with dest.open("xb") as handle:
+                    dest_created = True
+                    handle.write(payload)
                 storage_path = str(dest)
                 extraction_status = "extracted"
-            except Exception as exc:
+            except BaseException as exc:
+                if dest_created and dest is not None:
+                    dest.unlink(missing_ok=True)
+                if not isinstance(exc, Exception):
+                    raise
                 extraction_status = "error"
                 error_message = str(exc)
         elif not payload:
@@ -163,8 +173,9 @@ def extract_attachments(
             "extraction_status": extraction_status,
             "error_message": error_message,
         }
-        conn.execute(
-            """
+        try:
+            conn.execute(
+                """
             INSERT INTO attachments
               (account_id, message_db_id, source_id, original_filename, safe_filename,
                content_type, content_disposition, size_bytes, sha256,
@@ -173,9 +184,13 @@ def extract_attachments(
               (:account_id, :message_db_id, :source_id, :original_filename, :safe_filename,
                :content_type, :content_disposition, :size_bytes, :sha256,
                :storage_path, :extraction_status, :error_message)
-            """,
-            row,
-        )
+                """,
+                row,
+            )
+        except BaseException:
+            if dest_created and dest is not None:
+                dest.unlink(missing_ok=True)
+            raise
         results.append(row)
 
     return results
