@@ -74,7 +74,7 @@ def export_jsonl(
 
     # An explicit read transaction keeps message bodies and classifications from
     # different source generations out of the same export. The existing API
-    # commits pending caller writes on successful export; failure rolls back.
+    # commits pending caller writes on success; failure preserves earlier writes.
     conn.execute("SAVEPOINT mboxer_jsonl_export")
     try:
         with tempfile.TemporaryDirectory(prefix="mboxer-jsonl-") as directory:
@@ -197,7 +197,9 @@ def export_jsonl(
                 out_path.name: staged_output, manifest_path.name: staged_manifest,
             }, commit=conn.commit)
     except BaseException:
-        conn.rollback()
+        if conn.in_transaction:
+            conn.execute("ROLLBACK TO mboxer_jsonl_export")
+            conn.execute("RELEASE mboxer_jsonl_export")
         raise
 
     return {

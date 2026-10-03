@@ -121,6 +121,62 @@ def test_failed_commit_restores_previous_files_and_rolls_back_new_ledger(tmp_pat
         conn.close()
 
 
+@pytest.mark.parametrize("failure", ["residual", "install", "commit"])
+def test_failed_export_preserves_pending_caller_work_and_publication(tmp_path, monkeypatch, failure):
+    from mboxer.exporters import publication
+
+    conn, account_id = seeded_db(tmp_path)
+    out = tmp_path / "published" / "messages.jsonl"
+    try:
+        original = publish(conn, account_id, out)
+        manifest = Path(original["manifest_path"])
+        previous = (out.read_bytes(), manifest.read_bytes())
+        if failure == "residual":
+            conn.execute("UPDATE messages SET body_text = 'Contact late@example.invalid' WHERE id = 6")
+            conn.commit()
+        elif failure == "commit":
+            conn.fail_commit = True
+        else:
+            replace = publication.os.replace
+            armed = True
+
+            def fail_second_install(source, destination):
+                nonlocal armed
+                if armed and Path(destination) == manifest:
+                    armed = False
+                    raise OSError("synthetic second-file installation failure")
+                return replace(source, destination)
+
+            monkeypatch.setattr(publication.os, "replace", fail_second_install)
+
+        # This belongs to the caller's transaction, before the export savepoint.
+        conn.execute("UPDATE messages SET subject = 'Pending caller edit' WHERE id = 1")
+        expected = ResidualFindingsBlocked if failure == "residual" else ExportPublicationError
+        with pytest.raises(expected):
+            publish(conn, account_id, out)
+
+        assert conn.in_transaction
+        assert conn.execute("SELECT subject FROM messages WHERE id = 1").fetchone()[0] == "Pending caller edit"
+        assert (out.read_bytes(), manifest.read_bytes()) == previous
+        assert conn.execute("SELECT COUNT(*) FROM exports").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM export_items").fetchone()[0] == 1
+        assert {p.name for p in out.parent.iterdir()} == {out.name, manifest.name}
+
+        # Export failure neither rolls back nor commits the caller's work.
+        observer = sqlite3.connect(tmp_path / "synthetic.sqlite")
+        try:
+            assert observer.execute("SELECT subject FROM messages WHERE id = 1").fetchone()[0] == "Synthetic"
+            conn.fail_commit = False
+            conn.commit()
+            assert observer.execute("SELECT subject FROM messages WHERE id = 1").fetchone()[0] == "Pending caller edit"
+            assert observer.execute("SELECT COUNT(*) FROM exports").fetchone()[0] == 1
+            assert observer.execute("SELECT COUNT(*) FROM export_items").fetchone()[0] == 1
+        finally:
+            observer.close()
+    finally:
+        conn.close()
+
+
 def test_stream_preserves_order_policy_and_exportable_thread_count(tmp_path):
     conn, account_id = seeded_db(tmp_path, count=6)
     try:
