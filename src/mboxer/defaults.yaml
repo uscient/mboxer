@@ -26,22 +26,25 @@ paths:
 
 ingest:
   batch_commit_size: 500
-  resume: true
-  extract_attachments: true
-  store_body_text: true
+  resume: true             # ignored: use --resume
+  extract_attachments: true  # ignored: use --extract-attachments
+  store_body_text: true    # ignored: normalized body text is always stored
   store_body_html: false
   max_body_chars: 50000
+  # Ignored: deduplication follows the database identity constraints.
   dedupe_by:
     - message_id
     - body_hash
 
 classification:
-  provider: rules          # rules | ollama
-  level: thread            # message | thread
+  provider: rules          # reserved: only rule classification is implemented
+  level: thread            # ignored: select with --level message|thread
+  # Reserved placeholders below; no LLM classification or proposal generation.
   prompt_version: classifier-v1
   confidence_review_threshold: 0.70
   allow_category_proposals: true
   require_review_for_new_categories: true
+  # Only default_model and models are used for model-name resolution today.
   ollama:
     host: http://localhost:11434
     default_model: llama3.1:8b
@@ -124,8 +127,8 @@ security:
   scan_enabled: true
   scrub_enabled: true
   on_residual_findings: warn  # allow | warn | block
-  scan_attachments: true
-  quarantine_unsafe_attachments: true
+  scan_attachments: true          # ignored: attachment scanning is not implemented
+  quarantine_unsafe_attachments: true  # ignored: quarantine is not implemented
   redact_email_addresses: true
   redact_phone_numbers: true
   redact_ssn_like_numbers: true
@@ -188,6 +191,7 @@ exports:
         target_bytes_per_source: 75000000
         max_messages_per_source: 5000
 
+    # Descriptive metadata recorded in manifests, not configurable switches.
     format:
       extension: md
       category_directories: true
@@ -197,6 +201,8 @@ exports:
       include_attachment_references: true
       include_security_notes: true
 
+    # Descriptive metadata; current exporter groups by category/year.
+    # It does not implement configurable thread-preservation behavior.
     split_strategy:
       close_source_when_any_limit_reached: true
       prefer_thread_integrity: true
@@ -205,8 +211,8 @@ exports:
       split_oversized_threads: true
 
   jsonl:
-    enabled: true
+    enabled: true              # ignored: the export CLI selects the operation
     output_file: exports/rag/messages.jsonl
-    include_clean_body: true
-    include_raw_metadata: true
+    include_clean_body: true   # ignored: body projection follows export_profile
+    include_raw_metadata: true # ignored: metadata projection follows export_profile
     include_classification: true

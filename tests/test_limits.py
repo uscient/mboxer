@@ -189,7 +189,7 @@ def test_effective_source_budget(max_s, reserved, expected):
 
 @pytest.mark.integration
 def test_example_config_ultra_safe_profile_resolves():
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
     assert limits.max_sources == 600
     assert limits.reserved_sources == 100
