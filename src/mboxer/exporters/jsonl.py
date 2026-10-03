@@ -10,6 +10,7 @@ from ..accounts import validate_account_key
 from ..records import decode_address_fields
 from ..security.findings import ResidualFindingsBlocked, merge_counts
 from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
+from .classification import policy_read_snapshot, resolve_message_classification
 from .projection import prepare_projection
 
 
@@ -36,101 +37,80 @@ def export_jsonl(
     effective_profile = resolve_export_profile(export_profile, config_default)
     policy = resolve_findings_policy(security.get("on_residual_findings"), override=findings_policy)
 
-    if account_id is not None:
-        rows = conn.execute(
-            """
-            SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.recipients_json, m.cc_json, m.bcc_json, m.date_utc,
-                   m.body_text, m.body_hash, m.body_chars, m.body_word_count,
-                   m.attachment_count, s.source_name, s.source_slug
-            FROM messages m
-            JOIN mbox_sources s ON s.id = m.source_id
-            WHERE m.account_id = ?
-            ORDER BY m.date_utc NULLS LAST, m.id
-            """,
-            (account_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.recipients_json, m.cc_json, m.bcc_json, m.date_utc,
-                   m.body_text, m.body_hash, m.body_chars, m.body_word_count,
-                   m.attachment_count, s.source_name, s.source_slug
-            FROM messages m
-            JOIN mbox_sources s ON s.id = m.source_id
-            ORDER BY m.date_utc NULLS LAST, m.id
-            """
-        ).fetchall()
+    with policy_read_snapshot(conn):
+        if account_id is not None:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
+                       m.recipients_json, m.cc_json, m.bcc_json, m.date_utc,
+                       m.body_text, m.body_hash, m.body_chars, m.body_word_count,
+                       m.attachment_count, s.source_name, s.source_slug
+                FROM messages m
+                JOIN mbox_sources s ON s.id = m.source_id
+                WHERE m.account_id = ?
+                ORDER BY m.date_utc NULLS LAST, m.id
+                """,
+                (account_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
+                       m.recipients_json, m.cc_json, m.bcc_json, m.date_utc,
+                       m.body_text, m.body_hash, m.body_chars, m.body_word_count,
+                       m.attachment_count, s.source_name, s.source_slug
+                FROM messages m
+                JOIN mbox_sources s ON s.id = m.source_id
+                ORDER BY m.date_utc NULLS LAST, m.id
+                """
+            ).fetchall()
 
-    cols = [
-        "id", "message_id", "thread_key", "subject", "sender",
-        "recipients_json", "cc_json", "bcc_json", "date_utc",
-        "body_text", "body_hash", "body_chars", "body_word_count",
-        "attachment_count", "source_name", "source_slug",
-    ]
+        cols = [
+            "id", "message_id", "thread_key", "subject", "sender",
+            "recipients_json", "cc_json", "bcc_json", "date_utc",
+            "body_text", "body_hash", "body_chars", "body_word_count",
+            "attachment_count", "source_name", "source_slug",
+        ]
 
-    classifications: dict[int, dict[str, Any]] = {}
-    # Classification governs content policy even when its descriptive fields
-    # are omitted from the output. This flag controls serialization only.
-    if account_id is not None:
-        crows = conn.execute(
-            "SELECT message_db_id, category_path, sensitivity, export_profile, confidence, classifier_type "
-            "FROM classifications WHERE target_type = 'message' AND account_id = ?",
-            (account_id,),
-        ).fetchall()
-    else:
-        crows = conn.execute(
-            "SELECT message_db_id, category_path, sensitivity, export_profile, confidence, classifier_type "
-            "FROM classifications WHERE target_type = 'message'"
-        ).fetchall()
-    for cr in crows:
-        mid = cr[0]
-        if mid not in classifications:
-            classifications[mid] = {
-                "category_path": cr[1],
-                "sensitivity": cr[2],
-                "export_profile": cr[3],
-                "confidence": cr[4],
-                "classifier_type": cr[5],
-            }
+        candidate_message_count = len(rows)
+        excluded_message_count = 0
+        any_scrubbed = False
+        residual_total: dict[str, int] = {}
+        projected_records: list[dict[str, Any]] = []
 
-    candidate_message_count = len(rows)
-    excluded_message_count = 0
-    any_scrubbed = False
-    residual_total: dict[str, int] = {}
-    projected_records: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(zip(cols, row))
 
-    for row in rows:
-        record = dict(zip(cols, row))
+            classification = resolve_message_classification(
+                conn, record["id"], config_default, override_profile=export_profile,
+            )
+            per_record_profile = (classification or {}).get("export_profile")
+            projected = prepare_projection(
+                record,
+                config,
+                override_profile=export_profile,
+                record_profile=per_record_profile,
+                clear_body_word_count_for_metadata_only=True,
+            )
+            if projected is None:
+                excluded_message_count += 1
+                continue
 
-        per_record_profile = (classifications.get(record["id"]) or {}).get("export_profile")
-        projected = prepare_projection(
-            record,
-            config,
-            override_profile=export_profile,
-            record_profile=per_record_profile,
-            clear_body_word_count_for_metadata_only=True,
-        )
-        if projected is None:
-            excluded_message_count += 1
-            continue
+            record = projected.record
+            merge_counts(residual_total, projected.residual)
+            if projected.was_scrubbed:
+                any_scrubbed = True
 
-        record = projected.record
-        merge_counts(residual_total, projected.residual)
-        if projected.was_scrubbed:
-            any_scrubbed = True
+            record["account_key"] = account_key
+            record = decode_address_fields(record)
 
-        record["account_key"] = account_key
-        record = decode_address_fields(record)
+            if include_classification and classification is not None:
+                record["classification"] = classification
 
-        if include_classification and record["id"] in classifications:
-            record["classification"] = classifications[record["id"]]
+            projected_records.append(record)
 
-        projected_records.append(record)
-
-    if policy == "block" and residual_total:
-        raise ResidualFindingsBlocked(residual_total)
+        if policy == "block" and residual_total:
+            raise ResidualFindingsBlocked(residual_total)
 
     warnings: list[str] = []
     if policy == "warn" and residual_total:
