@@ -56,7 +56,7 @@ When any of these are created, deleted, or modified:
 Primary areas to inspect before changing behavior:
 
 - CLI: `src/mboxer/cli.py`, `src/mboxer/__main__.py`
-- Config: `src/mboxer/config.py`, `config/mboxer.example.yaml`
+- Config: `src/mboxer/config.py`, `src/mboxer/defaults.yaml` (`mboxer config-example`)
 - SQLite schema/migrations: `src/mboxer/db/schema.sql`, `src/mboxer/db/schema.py`, `src/mboxer/db/migrations/`
 - Accounts: `src/mboxer/accounts.py`
 - Ingest: `src/mboxer/ingest.py`

@@ -7,6 +7,7 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 
+from .accounts import validate_account_key
 from .naming import slugify
 
 MAX_FILENAME_STEM = 120
@@ -73,6 +74,7 @@ def attachment_output_path(
     path extraction actually writes, so multiple nameless attachments no longer
     collide on a single ``attachment-0`` path.
     """
+    validate_account_key(account_key)
     year = (date_str[:4] if date_str else None) or "undated"
     msg_slug = slugify(message_id, max_length=60) if message_id else "unknown"
     safe = _safe_attachment_filename(filename, idx)
@@ -92,6 +94,8 @@ def extract_attachments(
     conn: sqlite3.Connection,
     extract_to_disk: bool = True,
 ) -> list[dict[str, Any]]:
+    if extract_to_disk:
+        validate_account_key(account_key)
     year = (date_utc[:4] if date_utc else None) or "undated"
     msg_slug = slugify(message_id, max_length=60) if message_id else f"msg-{msg_db_id}"
     results: list[dict[str, Any]] = []

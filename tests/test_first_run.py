@@ -18,7 +18,7 @@ from mboxer.limits import resolve_notebooklm_limits
 from _factories import base_config
 
 SYNTHETIC_MBOX = Path(__file__).parent / "fixtures" / "synthetic.mbox"
-EXAMPLE_CONFIG_PATH = "config/mboxer.example.yaml"
+EXAMPLE_CONFIG_PATH = "src/mboxer/defaults.yaml"
 
 # Shared config for ingest tests
 INGEST_CONFIG = base_config()

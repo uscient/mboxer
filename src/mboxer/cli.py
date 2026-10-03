@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .accounts import AccountError
-from .config import ConfigError, deep_get, get_database_path, load_config
+from .config import ConfigError, deep_get, example_config_text, get_database_path, load_config
 from .db import init_db
 from .limits import resolve_notebooklm_limits, validate_notebooklm_limits
 
@@ -44,6 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local-first MBOX archive processor for KM, RAG, and NotebookLM source packs.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_example = sub.add_parser("config-example", help="Print the bundled YAML configuration example")
+    p_example.set_defaults(func=cmd_config_example)
 
     # ── init-db ────────────────────────────────────────────────────────────────
     p_init = sub.add_parser("init-db", help="Initialize or migrate the SQLite database")
@@ -165,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # ── Command implementations ───────────────────────────────────────────────────
+
+def cmd_config_example(args: argparse.Namespace) -> None:
+    print(example_config_text(), end="")
+
 
 def cmd_init_db(args: argparse.Namespace) -> None:
     config, db_path = load_runtime(args)
@@ -461,7 +468,7 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
 
 
 def cmd_export_jsonl(args: argparse.Namespace) -> None:
-    from .accounts import resolve_account
+    from .accounts import resolve_account, validate_account_key
     from .exporters.jsonl import export_jsonl
     from .security.findings import ResidualFindingsBlocked
     config, db_path = load_runtime(args)
@@ -469,6 +476,7 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
     try:
         account = resolve_account(conn, args.account, command="export jsonl")
         account_key = account["account_key"]
+        validate_account_key(account_key)
         account_id = account["id"]
     finally:
         conn.close()
