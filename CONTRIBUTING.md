@@ -1,8 +1,12 @@
 # Contributing
 
-Develop on a focused branch from `dev` and open a PR into `dev`. Releases move
-from `dev` to `master` through a separate PR; version tags and publication remain
-deliberate maintainer actions.
+Develop on a focused branch from `dev` and open PRs into `dev`. Version tags
+and publication remain deliberate maintainer actions.
+
+[PROJECT.md](PROJECT.md) maps implementation ownership and shared components.
+AGENTS.md provides navigation; executable behavior belongs in source,
+configuration, and tests. Historical agent setup packs and speculative task
+prompts have been removed.
 
 ## Local setup
 

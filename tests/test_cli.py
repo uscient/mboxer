@@ -241,7 +241,7 @@ def test_export_jsonl_writes_account_scoped_file(run_cli, ready, tmp_path):
     assert written.exists()
 
 
-# ── multi-account + inline account + LLM-not-wired branches ───────────────────
+# ── multi-account + inline account ───────────────────
 
 @pytest.mark.integration
 def test_ingest_create_account_inline(run_cli, cli_config):
@@ -300,9 +300,49 @@ def test_export_notebooklm_combined_accounts_stay_isolated(
 
 
 @pytest.mark.integration
-def test_classify_model_flag_reports_not_implemented(run_cli, ready):
+def test_classify_model_flag_is_rejected_before_work(run_cli, ready):
     result = run_cli(
-        "classify", "--config", ready, "--account", "primary-gmail", "--model", "llama3.1:8b",
+        "classify", "--config", ready, "--account", "primary-gmail", "--model", "unused",
+    )
+    assert result.exit_code == 2
+    assert "unrecognized arguments: --model" in result.stderr
+    with sqlite3.connect(_db_path(ready)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM classifications").fetchone()[0] == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("configured, cli_level, expected", [
+    ("message", None, "message"),
+    ("thread", None, "thread"),
+    ("message", "thread", "thread"),
+    ("thread", "message", "message"),
+])
+def test_classify_level_configuration_and_override(run_cli, ready, configured, cli_level, expected):
+    import yaml
+
+    config = load_config(ready)
+    config["classification"] = {"level": configured}
+    ready.write_text(yaml.safe_dump(config), encoding="utf-8")
+    result = run_cli(
+        "classify", "--config", ready, "--account", "primary-gmail",
+        *(["--level", cli_level] if cli_level else []),
     )
     assert result.exit_code == 0
-    assert "not yet implemented" in result.stdout
+    with sqlite3.connect(_db_path(ready)) as conn:
+        thread_count = conn.execute("SELECT COUNT(*) FROM classifications WHERE target_type = 'thread'").fetchone()[0]
+        assert (thread_count > 0) == (expected == "thread")
+        assert conn.execute("SELECT COUNT(*) FROM classifications").fetchone()[0] > 0
+
+
+@pytest.mark.integration
+def test_invalid_configured_classification_level_is_clean_error(run_cli, ready):
+    import yaml
+
+    config = load_config(ready)
+    config["classification"] = {"level": "unsupported"}
+    ready.write_text(yaml.safe_dump(config), encoding="utf-8")
+    result = run_cli("classify", "--config", ready)
+    assert result.exit_code == 1
+    assert "classification.level must be message or thread" in result.stderr
+    with sqlite3.connect(_db_path(ready)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM classifications").fetchone()[0] == 0

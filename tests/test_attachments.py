@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from mboxer.attachments import attachment_output_path, extract_attachments
+from mboxer.normalize import normalize_message
 
 
 # ── fixtures / helpers ────────────────────────────────────────────────────────
@@ -326,3 +327,36 @@ def test_extract_decodes_legacy_rfc2047_encoded_word(conn, tmp_path):
 
     assert len(rows) == 1
     assert rows[0]["original_filename"] == "report.pdf"  # decoded from the encoded-word
+
+
+@pytest.mark.parametrize("encoded,subject,filename", [
+    ("prefix =?utf-8?Q?caf=C3=A9?= suffix", "prefix  café  suffix", "prefix café suffix"),
+    ("=?unknown-charset?Q?caf=E9?=", "café", "café"),
+    ("=?utf-8?Q?broken=FF?=", "broken\ufffd", "broken\ufffd"),
+])
+def test_message_and_attachment_header_decoding_preserves_joining(conn, tmp_path, encoded, subject, filename):
+    msg = email.message_from_string(
+        f'Subject: {encoded}\n'
+        'Content-Type: application/octet-stream\n'
+        f'Content-Disposition: attachment; filename="{encoded}"\n\n'
+        'synthetic bytes'
+    )
+    assert normalize_message(msg, 1, "0")["subject"] == subject
+    rows = _extract(conn, msg, tmp_path / "attachments", extract=False)
+    assert rows[0]["original_filename"] == filename
+
+
+def test_attachment_count_and_extraction_agree_for_inline_and_unnamed_parts(conn, tmp_path):
+    msg = Message()
+    msg.set_type("multipart/mixed")
+    for disposition, filename in [(None, None), ("inline", "image.png"), ("attachment", None), ("inline", None)]:
+        part = Message()
+        part.set_type("application/octet-stream")
+        part.set_payload("synthetic payload")
+        if disposition:
+            part.add_header("Content-Disposition", disposition, **({"filename": filename} if filename else {}))
+        msg.attach(part)
+    record = normalize_message(msg, 1, "0")
+    rows = _extract(conn, msg, tmp_path / "attachments", extract=False)
+    assert record["attachment_count"] == len(rows) == 2
+    assert [row["original_filename"] for row in rows] == ["image.png", None]

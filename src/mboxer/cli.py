@@ -3,13 +3,17 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
 from .accounts import AccountError
-from .config import ConfigError, deep_get, example_config_text, get_database_path, load_config
+from .config import (
+    ConfigError, example_config_text, get_database_path, get_path, get_setting, load_config,
+)
 from .db import init_db
 from .limits import resolve_notebooklm_limits, validate_notebooklm_limits
+from .security.policy import EXPORT_PROFILES, FINDINGS_POLICIES
 
 
 # ── Argument helpers ──────────────────────────────────────────────────────────
@@ -22,6 +26,16 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def add_account_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--account", default=None, metavar="ACCOUNT_KEY",
                         help="Account key to operate on (required when multiple accounts exist)")
+
+
+def add_export_args(parser: argparse.ArgumentParser) -> None:
+    add_common_args(parser)
+    add_account_arg(parser)
+    parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--export-profile", choices=[p for p in EXPORT_PROFILES if p != "exclude"], default=None,
+    )
+    parser.add_argument("--findings-policy", choices=FINDINGS_POLICIES, default=None)
 
 
 def load_runtime(args: argparse.Namespace) -> tuple[dict, Path]:
@@ -101,8 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_classify = sub.add_parser("classify", help="Classify messages using rules")
     add_common_args(p_classify)
     add_account_arg(p_classify)
-    p_classify.add_argument("--model", default=None)
-    p_classify.add_argument("--level", choices=["message", "thread"], default="thread")
+    p_classify.add_argument(
+        "--level", choices=["message", "thread"], default=None,
+        help="Classification level (defaults to classification.level in config)",
+    )
     p_classify.set_defaults(func=cmd_classify)
 
     # ── review-categories ──────────────────────────────────────────────────────
@@ -135,14 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
     export_sub = p_export.add_subparsers(dest="export_type", required=True)
 
     p_nlm = export_sub.add_parser("notebooklm", help="Export NotebookLM Markdown source packs")
-    add_common_args(p_nlm)
-    add_account_arg(p_nlm)
+    add_export_args(p_nlm)
     p_nlm.add_argument("--accounts", default=None, metavar="KEY1,KEY2",
                        help="Comma-separated account keys for explicit combined export")
-    p_nlm.add_argument("--out", default=None)
-    p_nlm.add_argument("--export-profile",
-                       choices=["raw", "reviewed", "scrubbed", "metadata-only"], default=None)
-    p_nlm.add_argument("--findings-policy", choices=["allow", "warn", "block"], default=None)
     p_nlm.add_argument("--profile", default=None, help="NotebookLM limit profile")
     p_nlm.add_argument("--max-sources", type=int)
     p_nlm.add_argument("--reserved-sources", type=int)
@@ -157,12 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_nlm.set_defaults(func=cmd_export_notebooklm)
 
     p_jsonl = export_sub.add_parser("jsonl", help="Export RAG JSONL")
-    add_common_args(p_jsonl)
-    add_account_arg(p_jsonl)
-    p_jsonl.add_argument("--out", default=None)
-    p_jsonl.add_argument("--export-profile",
-                         choices=["raw", "reviewed", "scrubbed", "metadata-only"], default=None)
-    p_jsonl.add_argument("--findings-policy", choices=["allow", "warn", "block"], default=None)
+    add_export_args(p_jsonl)
     p_jsonl.set_defaults(func=cmd_export_jsonl)
 
     return parser
@@ -184,8 +190,7 @@ def cmd_account_add(args: argparse.Namespace) -> None:
     from .accounts import create_account, get_account
     config, db_path = load_runtime(args)
     init_db(db_path)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         if get_account(conn, args.account_key):
             raise SystemExit(f"Account '{args.account_key}' already exists.")
         account_id = create_account(
@@ -197,16 +202,13 @@ def cmd_account_add(args: argparse.Namespace) -> None:
         )
         label = args.display_name or args.account_key
         print(f"Added account: {args.account_key}  ({label})  id={account_id}")
-    finally:
-        conn.close()
 
 
 def cmd_account_list(args: argparse.Namespace) -> None:
     from .accounts import list_accounts
     config, db_path = load_runtime(args)
     init_db(db_path)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         accounts = list_accounts(conn)
         if not accounts:
             print("No accounts configured. Add one: mboxer account add <account-key>")
@@ -216,29 +218,23 @@ def cmd_account_list(args: argparse.Namespace) -> None:
         for a in accounts:
             print(f"{a['account_key']:<25} {(a['display_name'] or ''):<30} "
                   f"{(a['email_address'] or ''):<35} {a['provider'] or ''}")
-    finally:
-        conn.close()
 
 
 def cmd_account_show(args: argparse.Namespace) -> None:
     from .accounts import get_account
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         account = get_account(conn, args.account_key)
         if not account:
             raise SystemExit(f"Account not found: {args.account_key}")
         for k, v in account.items():
             print(f"  {k}: {v}")
-    finally:
-        conn.close()
 
 
 def cmd_account_update(args: argparse.Namespace) -> None:
     from .accounts import update_account
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         ok = update_account(
             conn, args.account_key,
             display_name=args.display_name,
@@ -248,8 +244,6 @@ def cmd_account_update(args: argparse.Namespace) -> None:
         if not ok:
             raise SystemExit(f"Account not found or nothing to update: {args.account_key}")
         print(f"Updated account: {args.account_key}")
-    finally:
-        conn.close()
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
@@ -257,16 +251,13 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     from .ingest import ingest_mbox
     config, db_path = load_runtime(args)
     init_db(db_path)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         if args.create_account and args.account:
             from .accounts import get_account, create_account
             if not get_account(conn, args.account):
                 create_account(conn, args.account)
                 print(f"Created account: {args.account}")
         account = resolve_account(conn, args.account, command="ingest")
-    finally:
-        conn.close()
 
     counts = ingest_mbox(
         args.mbox_path,
@@ -291,28 +282,25 @@ def cmd_classify(args: argparse.Namespace) -> None:
     from .classify import run_rule_classification
     from .taxonomy import seed_categories_from_config
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    level = args.level or get_setting(config, "classification.level")
+    if level not in ("message", "thread"):
+        raise ConfigError("classification.level must be message or thread")
+    with closing(open_db(db_path)) as conn:
         account = resolve_account(conn, args.account, command="classify")
         account_id = account["id"]
         seeded = seed_categories_from_config(conn, config)
         if seeded:
             print(f"Seeded {seeded} global categories from config.")
-        result = run_rule_classification(conn, config, level=args.level, account_id=account_id)
+        result = run_rule_classification(conn, config, level=level, account_id=account_id)
         print(f"Rule classification [{account['account_key']}]: "
               f"{result['classified']} classified, {result['skipped']} unmatched")
-        if args.model:
-            print(f"LLM classification with model={args.model} not yet implemented.")
-    finally:
-        conn.close()
 
 
 def cmd_review_categories(args: argparse.Namespace) -> None:
     from .accounts import resolve_account
     from .taxonomy import get_all_categories, get_category_message_counts, list_pending_proposals
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         account = resolve_account(conn, args.account, command="review-categories")
         account_id = account["id"]
         cats = get_all_categories(conn, account_id)
@@ -335,50 +323,39 @@ def cmd_review_categories(args: argparse.Namespace) -> None:
                 print(f"  [{p['id']}] {p['proposed_path']}  (confidence={conf})  {p['reason'] or ''}")
         else:
             print("\nNo pending category proposals.")
-    finally:
-        conn.close()
 
 
 def cmd_approve_category(args: argparse.Namespace) -> None:
     from .taxonomy import approve_proposal
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         try:
             path = approve_proposal(conn, args.proposal_id, args.note)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         print(f"Approved proposal {args.proposal_id} -> {path}")
-    finally:
-        conn.close()
 
 
 def cmd_reject_category(args: argparse.Namespace) -> None:
     from .taxonomy import reject_proposal
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         try:
             reject_proposal(conn, args.proposal_id, args.note)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         print(f"Rejected proposal {args.proposal_id}.")
-    finally:
-        conn.close()
 
 
 def cmd_security_scan(args: argparse.Namespace) -> None:
     from .accounts import resolve_account
     from .security.scan import run_security_scan
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         account = resolve_account(conn, args.account, command="security-scan")
         result = run_security_scan(conn, config, account_id=account["id"])
         print(f"[{account['account_key']}] Scanned {result['scanned']} messages, "
               f"found {result['findings']} potential findings.")
-    finally:
-        conn.close()
 
 
 def cmd_export_notebooklm(args: argparse.Namespace) -> None:
@@ -404,11 +381,10 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
         force=args.force,
     )
 
-    out_base = args.out or deep_get(config, "paths.notebooklm_dir") or "exports/notebooklm"
+    out_base = get_path(config, "paths.notebooklm_dir", args.out)
 
     # Resolve account(s)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         if args.accounts:
             account_keys = [k.strip() for k in args.accounts.split(",") if k.strip()]
             from .accounts import get_account
@@ -421,8 +397,6 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
         else:
             account = resolve_account(conn, args.account, command="export notebooklm")
             accounts_to_export = [account]
-    finally:
-        conn.close()
 
     print("NotebookLM export configuration")
     print(f"  db={db_path}")
@@ -435,30 +409,28 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
         print(f"WARNING: {w}")
 
     for account in accounts_to_export:
-        conn = open_db(db_path)
-        try:
-            stats = export_notebooklm(
-                conn, config, limits, Path(out_base),
-                account_id=account["id"],
-                account_key=account["account_key"],
-                account_email=account.get("email_address"),
-                account_display_name=account.get("display_name"),
-                export_profile=args.export_profile,
-                dry_run=args.dry_run,
-                db_path=str(db_path),
-                config_path=args.config,
-                warnings=warnings,
-                findings_policy=args.findings_policy,
-            )
-        except ResidualFindingsBlocked as exc:
-            print(
-                f"BLOCKED: would export residual detected-sensitive items {exc.counts}; "
-                "no files written.",
-                file=sys.stderr,
-            )
-            raise SystemExit(2) from exc
-        finally:
-            conn.close()
+        with closing(open_db(db_path)) as conn:
+            try:
+                stats = export_notebooklm(
+                    conn, config, limits, out_base,
+                    account_id=account["id"],
+                    account_key=account["account_key"],
+                    account_email=account.get("email_address"),
+                    account_display_name=account.get("display_name"),
+                    export_profile=args.export_profile,
+                    dry_run=args.dry_run,
+                    db_path=str(db_path),
+                    config_path=args.config,
+                    warnings=warnings,
+                    findings_policy=args.findings_policy,
+                )
+            except ResidualFindingsBlocked as exc:
+                print(
+                    f"BLOCKED: would export residual detected-sensitive items {exc.counts}; "
+                    "no files written.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2) from exc
 
         for warning in stats.get("warnings", [])[len(warnings):]:
             print(f"WARNING: {warning}")
@@ -475,44 +447,37 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
     from .exporters.jsonl import export_jsonl
     from .security.findings import ResidualFindingsBlocked
     config, db_path = load_runtime(args)
-    conn = open_db(db_path)
-    try:
+    with closing(open_db(db_path)) as conn:
         account = resolve_account(conn, args.account, command="export jsonl")
         account_key = account["account_key"]
         validate_account_key(account_key)
         account_id = account["id"]
-    finally:
-        conn.close()
 
-    default_out = deep_get(config, "exports.jsonl.output_file") or "exports/rag/messages.jsonl"
-    out_str = args.out or default_out
+    out_path = get_path(config, "exports.jsonl.output_file", args.out)
     # Inject account_key into the output path if it doesn't already include it
-    out_path = Path(out_str)
     if account_key not in out_path.parts:
         out_path = out_path.parent / account_key / out_path.name
 
-    conn = open_db(db_path)
-    try:
-        result = export_jsonl(
-            conn, config, out_path,
-            account_id=account_id,
-            account_key=account_key,
-            account_display_name=account.get("display_name"),
-            account_email_address=account.get("email_address"),
-            export_profile=args.export_profile,
-            db_path=str(db_path),
-            config_path=args.config,
-            findings_policy=args.findings_policy,
-        )
-    except ResidualFindingsBlocked as exc:
-        print(
-            f"BLOCKED: would export residual detected-sensitive items {exc.counts}; "
-            "no files written.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2) from exc
-    finally:
-        conn.close()
+    with closing(open_db(db_path)) as conn:
+        try:
+            result = export_jsonl(
+                conn, config, out_path,
+                account_id=account_id,
+                account_key=account_key,
+                account_display_name=account.get("display_name"),
+                account_email_address=account.get("email_address"),
+                export_profile=args.export_profile,
+                db_path=str(db_path),
+                config_path=args.config,
+                findings_policy=args.findings_policy,
+            )
+        except ResidualFindingsBlocked as exc:
+            print(
+                f"BLOCKED: would export residual detected-sensitive items {exc.counts}; "
+                "no files written.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
     if result.get("residual_findings") and result.get("residual_findings_policy") == "warn":
         print(f"WARNING: residual detected-sensitive items in export: {result['residual_findings']}")
     print(f"[{account_key}] Wrote {result['messages_written']} messages to {out_path}")

@@ -390,6 +390,31 @@ def test_thread_classification_records_rule_source_for_inheritance(tmp_path):
         conn.close()
 
 
+@pytest.mark.parametrize("assign_key,confidence", [("assign", 1.0), ("assign_hint", 0.75)])
+@pytest.mark.parametrize("level", ["message", "thread"])
+def test_assignment_policy_metadata_is_preserved_at_every_level(tmp_path, assign_key, confidence, level):
+    db_path, account_id = _setup(tmp_path, [USPS_MSG_1])
+    config = {"rules": [{
+        "name": "policy-test", "match": {"from_domain": ["usps.com"]},
+        assign_key: {
+            "category_path": "Postal / Private Mail", "sensitivity": "high",
+            "notebooklm_priority": "low", "export_profile": "exclude",
+        },
+    }]}
+    with sqlite3.connect(db_path) as conn:
+        run_rule_classification(conn, config, account_id=account_id, level=level)
+        rows = conn.execute(
+            "SELECT target_type, category_path, sensitivity, notebooklm_priority, export_profile, "
+            "classifier_type, classifier_name, confidence FROM classifications ORDER BY id"
+        ).fetchall()
+    policy = ("postal/private-mail", "high", "low", "exclude")
+    classifier_type = "rule" if assign_key == "assign" else "rule_hint"
+    expected = [(level, *policy, classifier_type, "policy-test", confidence)]
+    if level == "thread":
+        expected.append(("message", *policy, "rule_inherited", "policy-test", confidence))
+    assert rows == expected
+
+
 def test_thread_classification_account_scoped(tmp_path):
     """Thread classification for account A does not affect account B."""
     db_path_a = tmp_path / "a.sqlite"

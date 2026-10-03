@@ -17,6 +17,7 @@ from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ..config import ConfigError
+from ..files import sha256_file
 from ..naming import normalize_category_path
 
 _OWNER = ".mboxer-notebooklm.json"
@@ -37,11 +38,6 @@ def _relative(value: str) -> Path:
             or "\\" in value or any(part in {"", ".", ".."} for part in value.split("/"))):
         raise ExportPublicationError("Export inventory contains an unsafe relative path.")
     return Path(*path.parts)
-
-
-def _digest(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _target(root: Path, name: str) -> Path:
@@ -84,12 +80,12 @@ def _notebooklm_inventory(root: Path) -> dict[str, str]:
             "An empty legacy manifest cannot establish ownership. Select a new destination "
             "or manually review and move the old export first."
         )
-    owned: dict[str, str] = {"manifest.json": _digest(manifest)}
+    owned: dict[str, str] = {"manifest.json": sha256_file(manifest)}
     if marker.exists():
-        owned[_OWNER] = _digest(marker)
+        owned[_OWNER] = sha256_file(marker)
     csv_manifest = _target(root, "manifest.csv")
     if csv_manifest.exists():
-        owned["manifest.csv"] = _digest(csv_manifest)
+        owned["manifest.csv"] = sha256_file(csv_manifest)
     for row in rows:
         if (not isinstance(row, dict) or row.get("tool_name") != "mboxer"
                 or row.get("export_kind") != "notebooklm"
@@ -158,7 +154,7 @@ def _publish(
         owned = _notebooklm_inventory(root) if notebooklm else {}
         for name, digest in owned.items():
             target = _target(root, name)
-            if target.exists() and _digest(target) != digest:
+            if target.exists() and sha256_file(target) != digest:
                 raise ExportPublicationError(
                     "A previously generated export was modified; preserve it or select a new destination."
                 )

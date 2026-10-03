@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .accounts import validate_account_key
+from .mime import decode_header_parts, iter_attachments
 from .naming import slugify
 
 MAX_FILENAME_STEM = 120
@@ -50,10 +51,6 @@ def _resolve_storage_path(
         if not candidate.exists():
             return candidate
         counter += 1
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def attachment_output_path(
@@ -101,33 +98,19 @@ def extract_attachments(
     results: list[dict[str, Any]] = []
     idx = 0
 
-    for part in msg.walk():
+    for part in iter_attachments(msg):
         cd = (part.get_content_disposition() or "").lower()
-        if "attachment" not in cd and part.get_filename() is None:
-            continue
         ct = part.get_content_type()
         original_filename = part.get_filename()
 
         if original_filename:
-            from email.header import decode_header as _dh
-            decoded_parts = _dh(original_filename)
-            fname_parts: list[str] = []
-            for encoded, charset in decoded_parts:
-                if isinstance(encoded, bytes):
-                    enc = charset or "utf-8"
-                    try:
-                        fname_parts.append(encoded.decode(enc, errors="replace"))
-                    except LookupError:
-                        fname_parts.append(encoded.decode("latin-1", errors="replace"))
-                else:
-                    fname_parts.append(encoded)
-            original_filename = "".join(fname_parts)
+            original_filename = "".join(decode_header_parts(original_filename))
 
         payload = part.get_payload(decode=True)
         if not isinstance(payload, bytes):
             payload = b""
 
-        content_hash = _sha256_bytes(payload) if payload else None
+        content_hash = hashlib.sha256(payload).hexdigest() if payload else None
         safe_filename = _safe_attachment_filename(original_filename, idx)
         idx += 1
 

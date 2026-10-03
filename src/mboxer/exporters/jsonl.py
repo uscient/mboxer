@@ -13,6 +13,13 @@ from ..records import decode_address_fields
 from ..security.findings import ResidualFindingsBlocked, merge_counts
 from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
 from .classification import resolve_message_classification
+from .manifest import (
+    build_jsonl_manifest_rows,
+    build_safe_export_run_metadata,
+    safe_lineage_path,
+    security_manifest_posture,
+    write_jsonl_manifest,
+)
 from .projection import prepare_projection
 from .publication import publish_files
 
@@ -132,26 +139,16 @@ def export_jsonl(
             )
             byte_count = staged_output.stat().st_size
             now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            from .manifest import (
-                build_jsonl_manifest_rows, safe_lineage_path,
-                security_manifest_posture, write_jsonl_manifest,
-            )
             manifest_scrub_enabled, redaction_policy = security_manifest_posture(config)
-            manifest_rows = build_jsonl_manifest_rows(
+            # The public manifest and local run record describe one projection.
+            # Share its policy, counts and lineage rather than rebuilding them.
+            lineage: dict[str, Any] = dict(
                 account_key=account_key,
                 account_display_name=account_display_name,
                 account_email_address=account_email_address,
-                out_path=staged_output,
-                message_count=written,
-                thread_count=thread_count,
-                date_min=date_min,
-                date_max=date_max,
-                word_count=word_count,
-                byte_count=byte_count,
                 export_profile=export_profile,
                 security_profile=security_profile,
                 contains_scrubbed_content=any_scrubbed,
-                created_at=now,
                 source_database_path=db_path,
                 source_config_path=config_path,
                 scrub_enabled=manifest_scrub_enabled,
@@ -165,33 +162,34 @@ def export_jsonl(
                 residual_findings_by_type=residual_total,
                 residual_findings_policy=policy,
             )
+            manifest_rows = build_jsonl_manifest_rows(
+                **lineage, out_path=staged_output, message_count=written,
+                thread_count=thread_count, date_min=date_min, date_max=date_max,
+                word_count=word_count, byte_count=byte_count, created_at=now,
+            )
             for manifest_row in manifest_rows:
                 manifest_row["source_path"] = safe_lineage_path(out_path)
                 manifest_row["generated_path"] = safe_lineage_path(out_path)
             staged_manifest = write_jsonl_manifest(staged_output, manifest_rows)
-            export_id = _start_export_run(conn, "jsonl", str(out_path), effective_profile, account_id)
+            metadata = build_safe_export_run_metadata(
+                **lineage, export_kind="jsonl", output_path=out_path,
+                effective_profile=effective_profile, source_count=1, message_count=written,
+                generated_sha256=manifest_rows[0]["generated_sha256"],
+            )
+            cursor = conn.execute(
+                "INSERT INTO exports "
+                "(account_id, export_type, export_profile, output_path, status, finished_at, "
+                "source_count, message_count, metadata_json) "
+                "VALUES (?, 'jsonl', ?, ?, 'completed', CURRENT_TIMESTAMP, 1, ?, ?)",
+                (account_id, effective_profile, str(out_path), written,
+                 json.dumps(metadata, ensure_ascii=False, sort_keys=True)),
+            )
+            export_id = cursor.lastrowid
             # Local operational references retain final paths, never staging paths.
             conn.execute(
                 "INSERT INTO export_items (account_id, export_id, output_file, category_path, sequence) "
                 "VALUES (?, ?, ?, '', 1)",
                 (account_id, export_id, str(out_path)),
-            )
-            conn.execute(
-                "UPDATE exports SET status = 'completed', finished_at = CURRENT_TIMESTAMP, "
-                "source_count = 1, message_count = ?, metadata_json = ? WHERE id = ?",
-                (written, _jsonl_export_metadata_json(
-                    config=config, db_path=db_path, config_path=config_path,
-                    out_path=out_path, account_key=account_key,
-                    account_display_name=account_display_name,
-                    account_email_address=account_email_address,
-                    export_profile=export_profile, effective_profile=effective_profile,
-                    candidate_message_count=candidate_message_count,
-                    excluded_message_count=excluded_message_count, source_count=1,
-                    message_count=written, contains_scrubbed_content=any_scrubbed,
-                    generated_sha256=manifest_rows[0]["generated_sha256"], warnings=warnings,
-                    residual_scan_performed=True, residual_findings_total=sum(residual_total.values()),
-                    residual_findings_by_type=residual_total, residual_findings_policy=policy,
-                ), export_id),
             )
             publish_files(out_path.parent, {
                 out_path.name: staged_output, manifest_path.name: staged_manifest,
@@ -214,78 +212,3 @@ def export_jsonl(
         "residual_findings_policy": policy,
         "warnings": warnings,
     }
-
-
-def _start_export_run(
-    conn: sqlite3.Connection,
-    export_type: str,
-    output_path: str,
-    export_profile: str,
-    account_id: int | None,
-) -> int:
-    conn.execute(
-        """
-        INSERT INTO exports (account_id, export_type, export_profile, output_path)
-        VALUES (?, ?, ?, ?)
-        """,
-        (account_id, export_type, export_profile, output_path),
-    )
-    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-
-def _jsonl_export_metadata_json(
-    *,
-    config: dict[str, Any],
-    db_path: str | None,
-    config_path: str | None,
-    out_path: Path,
-    account_key: str,
-    account_display_name: str | None,
-    account_email_address: str | None,
-    export_profile: str | None,
-    effective_profile: str,
-    candidate_message_count: int,
-    excluded_message_count: int,
-    source_count: int,
-    message_count: int,
-    contains_scrubbed_content: bool,
-    generated_sha256: str,
-    warnings: list[str] | None,
-    residual_scan_performed: bool,
-    residual_findings_total: int,
-    residual_findings_by_type: dict[str, int],
-    residual_findings_policy: str,
-) -> str:
-    from .manifest import build_safe_export_run_metadata, security_manifest_posture
-
-    scrub_enabled, redaction_policy = security_manifest_posture(config)
-    jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
-    metadata = build_safe_export_run_metadata(
-        export_kind="jsonl",
-        account_key=account_key,
-        account_display_name=account_display_name,
-        account_email_address=account_email_address,
-        source_database_path=db_path,
-        source_config_path=config_path,
-        output_path=out_path,
-        export_profile=export_profile,
-        effective_profile=effective_profile,
-        security_profile=default_export_profile(
-            (config.get("security") or {}).get("default_export_profile")
-        ),
-        scrub_enabled=scrub_enabled,
-        redaction_policy=redaction_policy,
-        export_format=jsonl_config,
-        candidate_message_count=candidate_message_count,
-        excluded_message_count=excluded_message_count,
-        source_count=source_count,
-        message_count=message_count,
-        contains_scrubbed_content=contains_scrubbed_content,
-        generated_sha256=generated_sha256,
-        warnings=warnings,
-        residual_scan_performed=residual_scan_performed,
-        residual_findings_total=residual_findings_total,
-        residual_findings_by_type=residual_findings_by_type,
-        residual_findings_policy=residual_findings_policy,
-    )
-    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)

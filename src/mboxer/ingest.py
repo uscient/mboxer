@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import mailbox
 import sqlite3
@@ -9,8 +8,9 @@ from typing import Any
 
 from .accounts import AccountError, get_account, validate_account_key
 from .attachments import extract_attachments
-from .config import deep_get, ensure_parent_dir
+from .config import ensure_parent_dir, get_path, get_setting
 from .db import init_db
+from .files import sha256_file as _file_sha256
 from .naming import slugify
 from .normalize import compute_body_hash, normalize_message
 from .records import loads_address_list
@@ -22,14 +22,6 @@ class SourceIdentityError(RuntimeError):
 
 class AttachmentError(RuntimeError):
     """An attachment could not be stored with its message."""
-
-
-def _file_sha256(path: Path, chunk: int = 1 << 20) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while data := f.read(chunk):
-            h.update(data)
-    return h.hexdigest()
 
 
 def _get_or_create_source(
@@ -265,10 +257,10 @@ def ingest_mbox(
     if source_name is None:
         source_name = mbox_path.stem
 
-    batch_size = int(deep_get(config, "ingest.batch_commit_size", 500))
-    attachments_dir = Path(deep_get(config, "paths.attachments_dir", "data/attachments"))
-    store_body_html = bool(deep_get(config, "ingest.store_body_html", False))
-    max_body_chars = int(deep_get(config, "ingest.max_body_chars", 50000))
+    batch_size = int(get_setting(config, "ingest.batch_commit_size"))
+    attachments_dir = get_path(config, "paths.attachments_dir", fallback_on_empty=False)
+    store_body_html = bool(get_setting(config, "ingest.store_body_html"))
+    max_body_chars = int(get_setting(config, "ingest.max_body_chars"))
     if batch_size <= 0 or max_body_chars < 0:
         raise ValueError("batch_commit_size must be positive and max_body_chars nonnegative")
 

@@ -195,3 +195,22 @@ def test_example_config_ultra_safe_profile_resolves():
     assert limits.reserved_sources == 100
     assert limits.effective_source_budget == 500
     assert validate_notebooklm_limits(limits) == []
+
+
+@pytest.mark.parametrize("profiles", [None, [], "invalid", {1: _profile()}])
+def test_malformed_profile_collection_is_a_config_error(profiles):
+    config = {"exports": {"notebooklm": {"profiles": profiles}}}
+    with pytest.raises(ConfigError, match="must be a mapping of profile names"):
+        resolve_notebooklm_limits(config)
+
+
+@pytest.mark.parametrize("profile", [None, [], "invalid"])
+def test_malformed_selected_profile_is_a_config_error(profile):
+    config = {"exports": {"notebooklm": {"profile": "p", "profiles": {"p": profile}}}}
+    with pytest.raises(ConfigError, match="profile must be a mapping"):
+        resolve_notebooklm_limits(config)
+
+
+def test_partial_config_does_not_silently_import_bundled_profiles():
+    with pytest.raises(ConfigError, match="Unknown NotebookLM profile"):
+        resolve_notebooklm_limits({})

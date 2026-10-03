@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .config import ConfigError, deep_get
+from .config import ConfigError, deep_get, get_setting
 
 MB = 1024 * 1024
 NOTEBOOKLM_SAFETY_MAX_BYTES = 200 * MB
@@ -58,14 +58,18 @@ def resolve_notebooklm_limits(
     target_mb: int | None = None,
 ) -> NotebookLMLimits:
     """Resolve NotebookLM profile from config, then apply CLI overrides."""
-    default_profile = deep_get(config, "exports.notebooklm.profile", "ultra_safe")
+    default_profile = get_setting(config, "exports.notebooklm.profile")
     selected_name = profile_name or default_profile
     profiles = deep_get(config, "exports.notebooklm.profiles", {})
-    if selected_name not in profiles:
+    if not isinstance(profiles, dict) or any(not isinstance(name, str) for name in profiles):
+        raise ConfigError("exports.notebooklm.profiles must be a mapping of profile names")
+    if not isinstance(selected_name, str) or selected_name not in profiles:
         available = ", ".join(sorted(profiles)) or "<none>"
         raise ConfigError(f"Unknown NotebookLM profile '{selected_name}'. Available: {available}")
 
     profile = profiles[selected_name]
+    if not isinstance(profile, dict):
+        raise ConfigError(f"NotebookLM profile must be a mapping: {selected_name}")
     limits = NotebookLMLimits(
         profile_name=selected_name,
         max_sources=_require_int(profile, "max_sources"),
@@ -78,22 +82,16 @@ def resolve_notebooklm_limits(
         max_messages_per_source=_require_int(profile, "max_messages_per_source"),
     )
 
-    if max_sources is not None:
-        limits = replace(limits, max_sources=max_sources)
-    if reserved_sources is not None:
-        limits = replace(limits, reserved_sources=reserved_sources)
-    if target_sources is not None:
-        limits = replace(limits, target_sources=target_sources)
-    if max_words is not None:
-        limits = replace(limits, max_words_per_source=max_words)
-    if target_words is not None:
-        limits = replace(limits, target_words_per_source=target_words)
-    if max_mb is not None:
-        limits = replace(limits, max_bytes_per_source=mb_to_bytes(max_mb))
-    if target_mb is not None:
-        limits = replace(limits, target_bytes_per_source=mb_to_bytes(target_mb))
-
-    return limits
+    overrides: dict[str, Any] = {
+        "max_sources": max_sources,
+        "reserved_sources": reserved_sources,
+        "target_sources": target_sources,
+        "max_words_per_source": max_words,
+        "target_words_per_source": target_words,
+        "max_bytes_per_source": mb_to_bytes(max_mb) if max_mb is not None else None,
+        "target_bytes_per_source": mb_to_bytes(target_mb) if target_mb is not None else None,
+    }
+    return replace(limits, **{key: value for key, value in overrides.items() if value is not None})
 
 
 def validate_notebooklm_limits(
