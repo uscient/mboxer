@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..accounts import validate_account_key
 from ..limits import NotebookLMLimits
 from ..naming import category_to_directory, normalize_category_path, source_pack_filename
 from ..security.findings import ResidualFindingsBlocked, merge_counts
@@ -16,12 +17,7 @@ from .projection import prepare_projection
 
 
 def _date_band(date_utc: str | None) -> str:
-    if date_utc:
-        try:
-            return date_utc[:4]
-        except Exception:
-            pass
-    return "undated"
+    return date_utc[:4] if date_utc else "undated"
 
 
 def _render_message_md(record: dict[str, Any]) -> str:
@@ -304,6 +300,7 @@ def export_notebooklm(
     include_unclassified: bool = True,
     findings_policy: str | None = None,
 ) -> dict[str, Any]:
+    validate_account_key(account_key)
     records = _fetch_classified_messages(conn, account_id)
     if include_unclassified:
         records += _fetch_unclassified_messages(conn, account_id)

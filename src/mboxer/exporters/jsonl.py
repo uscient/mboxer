@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..accounts import validate_account_key
 from ..records import decode_address_fields
 from ..security.findings import ResidualFindingsBlocked, merge_counts
 from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
@@ -26,6 +27,7 @@ def export_jsonl(
     config_path: str | None = None,
     findings_policy: str | None = None,
 ) -> dict[str, Any]:
+    validate_account_key(account_key)
     jsonl_config = (config.get("exports") or {}).get("jsonl") or {}
     include_classification = jsonl_config.get("include_classification", True)
     security = config.get("security") or {}
@@ -69,28 +71,29 @@ def export_jsonl(
     ]
 
     classifications: dict[int, dict[str, Any]] = {}
-    if include_classification:
-        if account_id is not None:
-            crows = conn.execute(
-                "SELECT message_db_id, category_path, sensitivity, export_profile, confidence, classifier_type "
-                "FROM classifications WHERE target_type = 'message' AND account_id = ?",
-                (account_id,),
-            ).fetchall()
-        else:
-            crows = conn.execute(
-                "SELECT message_db_id, category_path, sensitivity, export_profile, confidence, classifier_type "
-                "FROM classifications WHERE target_type = 'message'"
-            ).fetchall()
-        for cr in crows:
-            mid = cr[0]
-            if mid not in classifications:
-                classifications[mid] = {
-                    "category_path": cr[1],
-                    "sensitivity": cr[2],
-                    "export_profile": cr[3],
-                    "confidence": cr[4],
-                    "classifier_type": cr[5],
-                }
+    # Classification governs content policy even when its descriptive fields
+    # are omitted from the output. This flag controls serialization only.
+    if account_id is not None:
+        crows = conn.execute(
+            "SELECT message_db_id, category_path, sensitivity, export_profile, confidence, classifier_type "
+            "FROM classifications WHERE target_type = 'message' AND account_id = ?",
+            (account_id,),
+        ).fetchall()
+    else:
+        crows = conn.execute(
+            "SELECT message_db_id, category_path, sensitivity, export_profile, confidence, classifier_type "
+            "FROM classifications WHERE target_type = 'message'"
+        ).fetchall()
+    for cr in crows:
+        mid = cr[0]
+        if mid not in classifications:
+            classifications[mid] = {
+                "category_path": cr[1],
+                "sensitivity": cr[2],
+                "export_profile": cr[3],
+                "confidence": cr[4],
+                "classifier_type": cr[5],
+            }
 
     candidate_message_count = len(rows)
     excluded_message_count = 0

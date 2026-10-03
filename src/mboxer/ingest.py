@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .accounts import AccountError, get_account
+from .accounts import AccountError, get_account, validate_account_key
 from .attachments import extract_attachments
 from .config import deep_get, ensure_parent_dir
 from .db import init_db
@@ -234,6 +234,8 @@ def ingest_mbox(
     force: bool = False,
     create_account_if_missing: bool = False,
 ) -> dict[str, Any]:
+    if extract_attachments_flag:
+        validate_account_key(account_key)
     mbox_path = Path(mbox_path).resolve()
     if not mbox_path.exists():
         raise FileNotFoundError(f"MBOX file not found: {mbox_path}")

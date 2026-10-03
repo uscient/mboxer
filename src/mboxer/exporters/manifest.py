@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
+from ..accounts import validate_account_key
 from ..security.detectors import active_detector_descriptors
 from ..security.policy import default_export_profile
 
@@ -414,6 +415,7 @@ def write_notebooklm_manifest(
     rows: list[dict[str, Any]],
 ) -> tuple[Path, Path]:
     """Write manifest.csv and manifest.json under out_dir/<account_key>/."""
+    validate_account_key(account_key)
     acct_dir = out_dir / account_key
     acct_dir.mkdir(parents=True, exist_ok=True)
     csv_path = acct_dir / "manifest.csv"
@@ -434,7 +436,7 @@ def write_jsonl_manifest(
     rows: list[dict[str, Any]],
 ) -> Path:
     """Write <stem>.manifest.json alongside the JSONL output file."""
-    manifest_path = out_path.with_suffix("").with_suffix(".manifest.json")
+    manifest_path = out_path.with_suffix(".manifest.json")
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest_path
