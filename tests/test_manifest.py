@@ -120,7 +120,7 @@ def db_with_data(tmp_path):
 
 @pytest.fixture()
 def example_config():
-    return load_config("config/mboxer.example.yaml")
+    return load_config()
 
 
 # ── Unit: manifest builders ───────────────────────────────────────────────────
@@ -279,7 +279,7 @@ def test_write_jsonl_manifest_path(tmp_path):
 # ── Integration: NotebookLM manifest ─────────────────────────────────────────
 
 def _do_notebooklm_export(db_path, tmp_path, account_key="test-gmail", dry_run=False):
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
     export_config = {
         **CLASSIFY_CONFIG,
@@ -477,7 +477,7 @@ def test_notebooklm_manifest_omits_attachment_contents(tmp_path):
         extract_attachments_flag=True,
     )
 
-    example_config = load_config("config/mboxer.example.yaml")
+    example_config = load_config()
     limits = resolve_notebooklm_limits(example_config, "ultra_safe")
     conn = sqlite3.connect(db_path)
     try:

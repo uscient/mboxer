@@ -86,7 +86,7 @@ def test_export_limit_validation_warns():
 
 def test_dry_run_notebooklm(tmp_path):
     db_path, account_id = _setup_db_with_account(tmp_path)
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
     conn = sqlite3.connect(db_path)
     try:
@@ -128,7 +128,7 @@ def test_jsonl_path_includes_account_key(tmp_path):
 
 def test_notebooklm_export_writes_files_under_account_dir(tmp_path):
     db_path, account_id = _setup_db_with_account(tmp_path, "dad-gmail")
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
     out_dir = tmp_path / "nlm_out"
     conn = sqlite3.connect(db_path)
@@ -150,7 +150,7 @@ def test_notebooklm_export_writes_files_under_account_dir(tmp_path):
 
 def test_notebooklm_export_header_contains_account(tmp_path):
     db_path, account_id = _setup_db_with_account(tmp_path, "dad-gmail")
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
     out_dir = tmp_path / "nlm_out"
     conn = sqlite3.connect(db_path)
@@ -185,7 +185,7 @@ def test_accounts_do_not_mix_in_export(tmp_path):
     ingest_mbox(mbox_a, config=CONFIG, db_path=db_path, account_key="dad-gmail")
     ingest_mbox(mbox_b, config=CONFIG, db_path=db_path, account_key="personal-gmail")
 
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
 
     conn = sqlite3.connect(db_path)
