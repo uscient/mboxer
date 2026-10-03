@@ -215,8 +215,7 @@ src/mboxer/
     findings.py       # residual-findings export gate
     policy.py         # export profile / findings policy helpers
 
-config/
-  mboxer.example.yaml   # full annotated config example
+src/mboxer/defaults.yaml  # single bundled configuration example
 
 tests/
   test_accounts.py
@@ -250,12 +249,13 @@ mboxer --help
 Copy and customize the example config:
 
 ```bash
-cp config/mboxer.example.yaml config/mboxer.yaml
+mkdir -p config
+mboxer config-example > config/mboxer.yaml
 ```
 
-> Tip: if you omit `--config`, `mboxer` falls back to the bundled `config/mboxer.example.yaml`, so
-> the commands below run out of the box for a first look. Copy it to `config/mboxer.yaml` and edit
-> that copy for real use.
+> Without `--config`, mboxer loads a legacy local `config/mboxer.example.yaml` if present,
+> otherwise the bundled defaults. This works from any directory after installation.
+> Pass `--config config/mboxer.yaml` to use your edited configuration.
 
 ## First run
 
@@ -410,17 +410,22 @@ mboxer export jsonl \
 
 ## Configuration and global flags
 
-Every command accepts two global flags:
+Runtime commands accept two common flags (`config-example` only prints the bundled YAML):
 
-- `--config PATH` — path to your YAML config. If omitted, `mboxer` falls back to the bundled
-  `config/mboxer.example.yaml`.
+- `--config PATH` — path to your YAML config. An explicit missing or invalid file is an error.
+  If omitted, a local `config/mboxer.example.yaml` takes precedence over bundled defaults.
+  A `config/mboxer.yaml` file is used only when explicitly selected.
 - `--db PATH` — override the SQLite database path. Otherwise the path comes from `paths.database`
   (then `project.default_database`) in config, defaulting to `var/mboxer.sqlite`.
 
-The annotated `config/mboxer.example.yaml` is the reference for every available key: ingest batch
-size, classification rules, locked taxonomy, security/redaction policy, NotebookLM limit profiles,
-and JSONL options. Config values are read with dotted-path access; there is currently no
-environment-variable support.
+Print the canonical example with `mboxer config-example`; its source is
+`src/mboxer/defaults.yaml`. It covers ingest batch size, classification rules, locked taxonomy,
+security/redaction policy, NotebookLM limit profiles, and JSONL options. Legacy placeholders
+are explicitly marked ignored or reserved. They do not enable functionality. In particular,
+attachment scanning/quarantine and LLM classification are not implemented; ingest resume
+and attachment extraction use CLI flags. NotebookLM `format` and `split_strategy` settings
+are descriptive manifest metadata, not configurable behavior. There is no environment-variable
+configuration support.
 
 ### Account commands
 
@@ -504,7 +509,7 @@ They are covered separately below.
 ## NotebookLM limit profiles (`--profile`)
 
 Limit profiles bound how many source files an export produces and how large each one gets.
-They are defined in `config/mboxer.example.yaml`.
+They are defined in the bundled example (`mboxer config-example`).
 
 | Profile | Max sources | Reserved | Target sources | Target words/source |
 |---|---|---|---|---|
@@ -642,8 +647,7 @@ security:
   scan_enabled: true
   scrub_enabled: true
   on_residual_findings: warn             # allow | warn | block (maps to --findings-policy)
-  scan_attachments: true
-  quarantine_unsafe_attachments: true
+  # Attachment scanning and quarantine are not implemented.
   redact_email_addresses: true
   redact_phone_numbers: true
   redact_ssn_like_numbers: true
@@ -659,9 +663,11 @@ Cloud-oriented exports should use `reviewed`, `scrubbed`, or `metadata-only` con
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch workflow and verification guide.
+
 ```bash
 pip install -e ".[dev]"
-
+python tests/fixtures/make_synthetic.py
 pytest
 ```
 
@@ -672,8 +678,23 @@ ruff check src/
 mypy src/
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff and mypy on Python 3.11 and the test suite on Python 3.11
-and 3.12. Test fixtures are synthetic; regenerate them with:
+CI checks PRs and pushes to `dev` and `master`. It combines Ruff/mypy, tests Python 3.11
+and 3.12 (coverage on 3.11), and builds/installs a wheel in an isolated environment outside
+the checkout. Configure the stable **CI gate** check as required in branch protection;
+docs-only changes still complete that gate. Superseded runs are cancelled. Randomized
+test order runs weekly and on demand.
+Runtime migration tests run with the suite; there is no separate snapshot-only schema check.
+
+To verify a distribution locally:
+
+```bash
+python -m pip install build
+python -m build
+python scripts/smoke_wheel.py dist/*.whl
+```
+
+Keep only the wheel being tested in `dist/` when using the wildcard. Build artifacts are
+ignored by Git. Test fixtures are synthetic; regenerate them with:
 
 ```bash
 python tests/fixtures/make_synthetic.py
@@ -710,8 +731,8 @@ python tests/fixtures/make_synthetic.py
 ## Troubleshooting / FAQ
 
 **`Config file not found: config/mboxer.yaml`**
-You passed `--config config/mboxer.yaml` but never created it. Copy the example
-(`cp config/mboxer.example.yaml config/mboxer.yaml`) or drop `--config` to use the bundled example.
+You passed an explicit config path that does not exist. Create its parent directory, run
+`mboxer config-example > config/mboxer.yaml`, then edit it; or omit `--config` to use defaults.
 
 **`<command> requires --account when multiple accounts exist`**
 More than one account is registered. Pass `--account <key>`; list keys with `mboxer account list`.

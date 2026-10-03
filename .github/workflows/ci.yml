@@ -2,87 +2,173 @@ name: CI
 
 on:
   push:
-    branches:
-      - master
+    branches: [dev, master]
   pull_request:
-    branches:
-      - master
+    branches: [dev, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint (ruff)
+  changes:
+    name: Select checks
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.scope.outputs.checks }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
-      - name: Run ruff
-        run: ruff check src/
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Skip expensive checks only for known documentation changes
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: python
+        run: |
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
 
-  typecheck:
-    name: Type Check (mypy)
+          # New branches, manual runs, missing history, and unknown paths run
+          # everything. --no-renames checks both sides of moves out of src/.
+          checks = True
+          base = os.environ.get("BASE_SHA", "")
+          if re.fullmatch(r"[0-9a-f]{40}", base) and base != "0" * 40:
+              try:
+                  diff = subprocess.check_output(
+                      ["git", "diff", "--name-only", "--no-renames", "-z", base, "HEAD"]
+                  )
+              except subprocess.CalledProcessError:
+                  print("Base revision unavailable; running all checks.")
+              else:
+                  paths = [os.fsdecode(path) for path in diff.split(b"\0") if path]
+                  documentation = {
+                      "AGENTS.md", "CLAUDE.md", "APPLY.md", "CHANGELOG.md",
+                      "CONTRIBUTING.md", "PROJECT.md",
+                  }
+                  # README is package metadata, so it deliberately runs checks.
+                  checks = not paths or not all(
+                      path in documentation
+                      or (path.startswith("docs/") and path.endswith(".md"))
+                      for path in paths
+                  )
+          value = str(checks).lower()
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"checks={value}\n")
+          print(f"Run lint, tests, and installed-wheel check: {value}")
+
+  lint:
+    name: Lint and type check
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+          cache-dependency-path: pyproject.toml
+      - name: Install lint dependencies
+        run: python -m pip install -e ".[lint]"
+      - name: Run ruff
+        run: python -m ruff check src/
       - name: Run mypy
-        run: mypy src/
+        run: python -m mypy src/
 
   test:
-    name: Test + coverage (pytest) / Python ${{ matrix.python-version }}
+    name: Tests / Python ${{ matrix.python-version }}
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python-version:
-          - "3.11"
-          - "3.12"
+        python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+          cache-dependency-path: pyproject.toml
+      - name: Install test dependencies
+        run: python -m pip install -e ".[test]"
       - name: Generate synthetic test fixtures
         run: python tests/fixtures/make_synthetic.py
-      - name: Run pytest with coverage (fails under the pyproject coverage floor)
-        run: pytest --tb=short --cov=mboxer --cov-report=term-missing
+      # The complete suite includes fresh/legacy DB runtime migration tests.
+      - name: Run tests with the existing coverage floor
+        if: matrix.python-version == '3.11'
+        run: python -m pytest --tb=short --cov=mboxer --cov-report=term-missing
+      - name: Run compatibility tests without duplicate coverage work
+        if: matrix.python-version != '3.11'
+        run: python -m pytest --tb=short
 
-  random-order:
-    name: Random order (pytest-randomly canary)
+  package:
+    name: Installed wheel smoke test
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
     runs-on: ubuntu-latest
-    # Informational canary: surfaces order-dependence without blocking merges.
-    # pytest-randomly prints "Using --randomly-seed=..." so any failure reproduces
-    # via `pytest -p randomly --randomly-seed=<seed>`.
-    continue-on-error: true
-    permissions:
-      contents: read
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          python-version: "3.12"
+          # setuptools-scm needs the version tags when building distributions.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
           cache: pip
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
-      - name: Generate synthetic test fixtures
-        run: python tests/fixtures/make_synthetic.py
-      - name: Run suite in random order (seed printed for reproduction)
-        run: python -m pytest -p randomly -o addopts="--strict-markers --strict-config" --tb=short
+          cache-dependency-path: pyproject.toml
+      - name: Install build frontend
+        run: python -m pip install build
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check installed CLI, bundled configuration, and migrations outside checkout
+        run: python scripts/smoke_wheel.py dist/*.whl
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [changes, lint, test, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected check to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: python
+        run: |
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          selection = needs["changes"]
+          checks = selection["outputs"].get("checks")
+          if selection["result"] != "success" or checks not in {"true", "false"}:
+              sys.exit("Check selection failed or returned no decision.")
+          expected = "success" if checks == "true" else "skipped"
+          unexpected = {
+              job: needs[job]["result"]
+              for job in ("lint", "test", "package")
+              if needs[job]["result"] != expected
+          }
+          if unexpected:
+              sys.exit(f"Expected {expected}; observed {unexpected}")
+          print("All selected checks passed." if checks == "true" else "Documentation-only change.")
