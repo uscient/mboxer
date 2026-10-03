@@ -92,6 +92,11 @@ Each exported file preserves useful email context:
 Export output is split by category, year, and size band to respect NotebookLM source limits.
 A CSV manifest (`manifest.csv`) and JSON manifest (`manifest.json`) are written under
 `<out>/<account-key>/` for each export run.
+Re-export replaces the account's managed generation and removes obsolete packs
+listed in its prior manifest. Packing counts complete rendered files and fails
+before publication if the configured source budget cannot hold the full export.
+See [limits and publication behavior](docs/notebooklm-limits.md) for ownership,
+recovery, and temporary disk requirements.
 
 ### SQLite database
 

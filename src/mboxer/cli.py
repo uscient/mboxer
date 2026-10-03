@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .accounts import AccountError
@@ -395,6 +396,8 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
         target_mb=args.target_mb,
         max_mb=args.max_mb,
     )
+    if args.allow_full_source_budget:
+        limits = replace(limits, reserved_sources=0)
     warnings = validate_notebooklm_limits(
         limits,
         allow_full_source_budget=args.allow_full_source_budget,
