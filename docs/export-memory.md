@@ -22,8 +22,8 @@ Representative measurements on Linux / Python 3.12.14, one sample per size:
 | NotebookLM | 5.14 → 64.17 MB | 1.52 → 1.67 MB | 109.75 → 26.25 MB |
 | Security scan | 2.19 → 35.17 MB | 0.0063 → 0.0063 MB | 62.09 → 22.08 MB |
 
-MB means 1,000,000 bytes. The baseline is the export-boundary upgrade before
-streaming (`f91f7fc`, equivalent remote tree `43e246f`). Python peaks use
+MB means 1,000,000 bytes. The baseline is the unchanged `dev` checkout before
+the upgrade (`aa1b987`, tree `e979add`). Python peaks use
 `tracemalloc` during the operation and exclude corpus construction. Process RSS
 also includes imports, corpus construction, SQLite caches, and native allocations;
 it is available where Python's `resource` module supports it. Instrumented wall
