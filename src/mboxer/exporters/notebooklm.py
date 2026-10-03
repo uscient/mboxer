@@ -8,20 +8,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..accounts import validate_account_key
 from ..limits import NotebookLMLimits
 from ..naming import category_to_directory, normalize_category_path, source_pack_filename
 from ..security.findings import ResidualFindingsBlocked, merge_counts
 from ..security.policy import default_export_profile, resolve_export_profile, resolve_findings_policy
+from .classification import policy_read_snapshot, resolve_message_classification
 from .projection import prepare_projection
 
 
 def _date_band(date_utc: str | None) -> str:
-    if date_utc:
-        try:
-            return date_utc[:4]
-        except Exception:
-            pass
-    return "undated"
+    return date_utc[:4] if date_utc else "undated"
 
 
 def _render_message_md(record: dict[str, Any]) -> str:
@@ -71,78 +68,43 @@ def _source_header(
     """).lstrip()
 
 
-def _fetch_classified_messages(
+def _fetch_messages(
     conn: sqlite3.Connection,
     account_id: int | None,
+    config_default: str | None,
+    override_profile: str | None,
+    include_unclassified: bool,
 ) -> list[dict[str, Any]]:
-    if account_id is not None:
-        rows = conn.execute(
-            """
-            SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.date_utc, m.body_text, m.body_chars, m.body_word_count,
-                   c.category_path, c.export_profile, c.sensitivity
-            FROM messages m
-            JOIN classifications c ON c.message_db_id = m.id
-            WHERE c.target_type = 'message' AND m.account_id = ?
-            ORDER BY c.category_path, m.date_utc NULLS LAST, m.id
-            """,
-            (account_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.date_utc, m.body_text, m.body_chars, m.body_word_count,
-                   c.category_path, c.export_profile, c.sensitivity
-            FROM messages m
-            JOIN classifications c ON c.message_db_id = m.id
-            WHERE c.target_type = 'message'
-            ORDER BY c.category_path, m.date_utc NULLS LAST, m.id
-            """
-        ).fetchall()
-    cols = [
-        "id", "message_id", "thread_key", "subject", "sender",
-        "date_utc", "body_text", "body_chars", "body_word_count",
-        "category_path", "export_profile", "sensitivity",
-    ]
-    return [dict(zip(cols, row)) for row in rows]
-
-
-def _fetch_unclassified_messages(
-    conn: sqlite3.Connection,
-    account_id: int | None,
-) -> list[dict[str, Any]]:
-    if account_id is not None:
-        rows = conn.execute(
-            """
-            SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.date_utc, m.body_text, m.body_chars, m.body_word_count
-            FROM messages m
-            LEFT JOIN classifications c ON c.message_db_id = m.id
-            WHERE c.id IS NULL AND m.account_id = ?
-            ORDER BY m.date_utc NULLS LAST, m.id
-            """,
-            (account_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT m.id, m.message_id, m.thread_key, m.subject, m.sender,
-                   m.date_utc, m.body_text, m.body_chars, m.body_word_count
-            FROM messages m
-            LEFT JOIN classifications c ON c.message_db_id = m.id
-            WHERE c.id IS NULL
-            ORDER BY m.date_utc NULLS LAST, m.id
-            """
-        ).fetchall()
-    cols = [
+    query = """
+        SELECT id, message_id, thread_key, subject, sender,
+               date_utc, body_text, body_chars, body_word_count
+        FROM messages WHERE (? IS NULL OR account_id = ?)
+    """
+    columns = [
         "id", "message_id", "thread_key", "subject", "sender",
         "date_utc", "body_text", "body_chars", "body_word_count",
     ]
-    return [
-        {**dict(zip(cols, row)), "category_path": "unclassified", "export_profile": None, "sensitivity": None}
-        for row in rows
-    ]
+    records = []
+    with policy_read_snapshot(conn):
+        for row in conn.execute(query, (account_id, account_id)):
+            record = dict(zip(columns, row))
+            classification = resolve_message_classification(
+                conn, record["id"], config_default, override_profile=override_profile,
+            )
+            if classification is None and not include_unclassified:
+                continue
+            record.update(classification or {
+                "category_path": "unclassified", "export_profile": None, "sensitivity": None,
+            })
+            record["_unclassified"] = classification is None
+            records.append(record)
+    # Preserve the original classified-first category/date order, using only
+    # the winning classification. Multiple evidence rows are not extra mail.
+    records.sort(key=lambda r: (
+        r["_unclassified"], r["category_path"], r["date_utc"] is None,
+        r["date_utc"] or "", r["id"],
+    ))
+    return records
 
 
 def _prepare_records_for_export(
@@ -304,9 +266,12 @@ def export_notebooklm(
     include_unclassified: bool = True,
     findings_policy: str | None = None,
 ) -> dict[str, Any]:
-    records = _fetch_classified_messages(conn, account_id)
-    if include_unclassified:
-        records += _fetch_unclassified_messages(conn, account_id)
+    validate_account_key(account_key)
+    security = config.get("security") or {}
+    records = _fetch_messages(
+        conn, account_id, security.get("default_export_profile"), export_profile,
+        include_unclassified,
+    )
 
     candidate_message_count = len(records)
     warnings = list(warnings or [])

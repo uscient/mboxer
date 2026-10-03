@@ -464,7 +464,7 @@ def cmd_export_notebooklm(args: argparse.Namespace) -> None:
 
 
 def cmd_export_jsonl(args: argparse.Namespace) -> None:
-    from .accounts import resolve_account
+    from .accounts import resolve_account, validate_account_key
     from .exporters.jsonl import export_jsonl
     from .security.findings import ResidualFindingsBlocked
     config, db_path = load_runtime(args)
@@ -472,6 +472,7 @@ def cmd_export_jsonl(args: argparse.Namespace) -> None:
     try:
         account = resolve_account(conn, args.account, command="export jsonl")
         account_key = account["account_key"]
+        validate_account_key(account_key)
         account_id = account["id"]
     finally:
         conn.close()
