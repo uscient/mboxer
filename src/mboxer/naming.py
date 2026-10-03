@@ -37,6 +37,7 @@ def source_pack_filename(category_path: str, date_band: str, sequence: int, exte
     """Create a semantic NotebookLM source-pack filename."""
     category_slug = normalize_category_path(category_path).replace("/", "-")
     date_slug = slugify(date_band, max_length=40)
-    stem = f"{category_slug}-{date_slug}-{sequence:03d}"
-    stem = stem[:MAX_FILENAME_STEM].rstrip("-")
+    suffix = f"-{date_slug}-{sequence:03d}"
+    # Truncate the descriptive prefix, never the identity-bearing sequence.
+    stem = category_slug[:MAX_FILENAME_STEM - len(suffix)].rstrip("-") + suffix
     return f"{stem}.{extension.lstrip('.')}"

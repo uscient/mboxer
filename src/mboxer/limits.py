@@ -10,6 +10,10 @@ NOTEBOOKLM_SAFETY_MAX_BYTES = 200 * MB
 NOTEBOOKLM_WARN_MAX_WORDS = 500_000
 
 
+class ExportLimitError(ConfigError):
+    """Raised when a complete export cannot satisfy its configured hard limits."""
+
+
 @dataclass(frozen=True)
 class NotebookLMLimits:
     profile_name: str
@@ -105,6 +109,12 @@ def validate_notebooklm_limits(
         raise ConfigError("max_sources must be positive")
     if limits.reserved_sources < 0:
         raise ConfigError("reserved_sources cannot be negative")
+    for key in (
+        "target_sources", "max_words_per_source", "target_words_per_source",
+        "max_bytes_per_source", "target_bytes_per_source", "max_messages_per_source",
+    ):
+        if getattr(limits, key) <= 0:
+            raise ConfigError(f"{key} must be positive")
     if limits.effective_source_budget <= 0 and not allow_full_source_budget:
         raise ConfigError("effective source budget is zero; reduce reserved_sources")
 

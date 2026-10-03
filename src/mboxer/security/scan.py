@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from typing import Any
 
 from .detectors import run_detectors
@@ -74,21 +75,21 @@ def run_security_scan(
         query += " AND account_id = ?"
         params.append(account_id)
 
-    rows = conn.execute(query, params).fetchall()
     total_findings = 0
     scanned = 0
 
-    for msg_id, msg_account_id, body_text in rows:
-        findings = scan_text(body_text)
-        for finding in findings:
-            if _insert_finding_once(
-                conn,
-                account_id=msg_account_id,
-                message_db_id=msg_id,
-                finding=finding,
-            ):
-                total_findings += 1
-        scanned += 1
+    with closing(conn.execute(query, params)) as rows:
+        for msg_id, msg_account_id, body_text in rows:
+            findings = scan_text(body_text)
+            for finding in findings:
+                if _insert_finding_once(
+                    conn,
+                    account_id=msg_account_id,
+                    message_db_id=msg_id,
+                    finding=finding,
+                ):
+                    total_findings += 1
+            scanned += 1
 
     conn.commit()
     return {"scanned": scanned, "findings": total_findings}
