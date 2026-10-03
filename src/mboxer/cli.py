@@ -272,6 +272,10 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     )
     print(f"seen={counts['seen']} inserted={counts['inserted']} "
           f"skipped={counts['skipped']} errors={counts['errors']}")
+    if counts.get("status") == "interrupted":
+        raise SystemExit(130)
+    if counts["errors"] or counts.get("status") == "failed":
+        raise SystemExit(1)
 
 
 def cmd_classify(args: argparse.Namespace) -> None:

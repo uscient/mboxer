@@ -12,12 +12,16 @@ from .attachments import extract_attachments
 from .config import deep_get, ensure_parent_dir
 from .db import init_db
 from .naming import slugify
-from .normalize import normalize_message
+from .normalize import compute_body_hash, normalize_message
 from .records import loads_address_list
 
 
 class SourceIdentityError(RuntimeError):
     """Raised when an existing source path no longer matches its recorded content hash."""
+
+
+class AttachmentError(RuntimeError):
+    """An attachment could not be stored with its message."""
 
 
 def _file_sha256(path: Path, chunk: int = 1 << 20) -> str:
@@ -35,7 +39,7 @@ def _get_or_create_source(
     account_id: int,
     *,
     force: bool = False,
-) -> int:
+) -> tuple[int, str]:
     source_slug = slugify(source_name)
     stat = file_path.stat()
     file_sha256 = _file_sha256(file_path)
@@ -51,6 +55,10 @@ def _get_or_create_source(
                 "Source MBOX content hash changed for this account/path; "
                 "rerun with --force to replace local message evidence."
             )
+        if force:
+            # Publish replacement identity only in the transaction that stores
+            # the complete replacement source, never before it is read.
+            return source_id, file_sha256
         conn.execute(
             """
             UPDATE mbox_sources
@@ -60,7 +68,7 @@ def _get_or_create_source(
             (stat.st_size, file_sha256, stat.st_mtime, source_id),
         )
         conn.commit()
-        return source_id
+        return source_id, file_sha256
 
     conn.execute(
         """
@@ -79,10 +87,11 @@ def _get_or_create_source(
         ),
     )
     conn.commit()
-    return conn.execute(
+    source_id = conn.execute(
         "SELECT id FROM mbox_sources WHERE account_id = ? AND file_path = ?",
         (account_id, str(file_path)),
     ).fetchone()[0]
+    return source_id, file_sha256
 
 
 def _create_run(conn: sqlite3.Connection, source_id: int, account_id: int) -> int:
@@ -110,8 +119,15 @@ def _get_resume_run(conn: sqlite3.Connection, source_id: int) -> tuple[int, str 
 
 
 def _update_run(conn: sqlite3.Connection, run_id: int, **kwargs: Any) -> None:
+    allowed = {
+        "status", "last_mbox_key", "messages_seen", "messages_inserted",
+        "messages_skipped", "errors_count",
+    }
+    if not kwargs or not kwargs.keys() <= allowed:
+        raise ValueError("Unsupported ingest-run update fields")
     sets = ", ".join(f"{k} = :{k}" for k in kwargs)
-    conn.execute(f"UPDATE ingest_runs SET {sets} WHERE id = :_id", {"_id": run_id, **kwargs})
+    # Only literal column names from the allowlist above enter this statement.
+    conn.execute(f"UPDATE ingest_runs SET {sets} WHERE id = :_id", {"_id": run_id, **kwargs})  # nosec B608
 
 
 def _record_ingest_error(
@@ -172,8 +188,7 @@ def _upsert_thread(
 def _delete_message_dependents(conn: sqlite3.Connection, msg_db_id: int) -> None:
     """Delete all dependent rows for a message and the message itself.
 
-    Thread-level classifications (target_type='thread') are left intact;
-    re-running classify will refresh them.
+    Source replacement separately invalidates affected thread classifications.
     """
     thread_info = conn.execute(
         "SELECT thread_key, account_id, source_id FROM messages WHERE id = ?",
@@ -181,7 +196,11 @@ def _delete_message_dependents(conn: sqlite3.Connection, msg_db_id: int) -> None
     ).fetchone()
 
     conn.execute("DELETE FROM export_items WHERE message_db_id = ?", (msg_db_id,))
-    conn.execute("DELETE FROM security_findings WHERE message_db_id = ?", (msg_db_id,))
+    conn.execute(
+        "DELETE FROM security_findings WHERE message_db_id = ? OR attachment_id IN "
+        "(SELECT id FROM attachments WHERE message_db_id = ?)",
+        (msg_db_id, msg_db_id),
+    )
     conn.execute(
         "DELETE FROM classifications WHERE message_db_id = ? AND target_type = 'message'",
         (msg_db_id,),
@@ -248,10 +267,14 @@ def ingest_mbox(
     attachments_dir = Path(deep_get(config, "paths.attachments_dir", "data/attachments"))
     store_body_html = bool(deep_get(config, "ingest.store_body_html", False))
     max_body_chars = int(deep_get(config, "ingest.max_body_chars", 50000))
+    if batch_size <= 0 or max_body_chars < 0:
+        raise ValueError("batch_commit_size must be positive and max_body_chars nonnegative")
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    mbox = None
+    created_paths: set[Path] = set()
 
     try:
         account = get_account(conn, account_key)
@@ -269,7 +292,7 @@ def ingest_mbox(
                 )
 
         account_id: int = account["id"]  # type: ignore[index]
-        source_id = _get_or_create_source(
+        source_id, expected_source_hash = _get_or_create_source(
             conn, mbox_path, source_name, account_id, force=force
         )
 
@@ -281,7 +304,7 @@ def ingest_mbox(
         resume_run_id: int | None = None
         resume_key: str | None = None
 
-        if resume:
+        if resume and not force:
             existing = _get_resume_run(conn, source_id)
             if existing:
                 resume_run_id, resume_key = existing
@@ -292,7 +315,7 @@ def ingest_mbox(
             _update_run(conn, run_id, status="running")
             conn.commit()
         else:
-            if not resume:
+            if not resume or force:
                 conn.execute(
                     "UPDATE ingest_runs SET status = 'interrupted' "
                     "WHERE source_id = ? AND status = 'running'",
@@ -301,7 +324,34 @@ def ingest_mbox(
                 conn.commit()
             run_id = _create_run(conn, source_id, account_id)
 
-        counts = {"seen": 0, "inserted": 0, "skipped": 0, "replaced": 0, "errors": 0}
+        counts: dict[str, Any] = {"seen": 0, "inserted": 0, "skipped": 0, "replaced": 0, "errors": 0}
+        errors: list[dict[str, Any]] = []
+        checkpoint_blocked = False
+
+        def record_error(**details: Any) -> None:
+            nonlocal checkpoint_blocked
+            checkpoint_blocked = True
+            counts["errors"] += 1
+            event = dict(account_id=account_id, run_id=run_id, source_id=source_id, **details)
+            errors.append(event)
+            _record_ingest_error(conn, **event)
+
+        def rollback_replacement(status: str) -> None:
+            conn.rollback()
+            for path in created_paths:
+                path.unlink(missing_ok=True)
+            created_paths.clear()
+            counts["inserted"] = counts["replaced"] = 0
+            counts["status"] = status
+            for event in errors:
+                _record_ingest_error(conn, **event)
+            _update_run(
+                conn, run_id, status=status, last_mbox_key=None,
+                messages_seen=counts["seen"], messages_inserted=0,
+                messages_skipped=counts["skipped"], errors_count=counts["errors"],
+            )
+            conn.execute("UPDATE ingest_runs SET finished_at = CURRENT_TIMESTAMP WHERE id = ?", (run_id,))
+            conn.commit()
 
         mbox = mailbox.mbox(str(mbox_path), factory=None, create=False)
         try:
@@ -329,6 +379,27 @@ def ingest_mbox(
         last_key_processed: str | None = resume_key
         past_resume_key = resume_key is None
 
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if force:
+            # Replacement starts from the complete source, including keys that
+            # disappeared when an archive shrank. The entire transaction is
+            # rolled back on any failed message or interruption.
+            conn.execute(
+                "DELETE FROM classifications WHERE account_id = ? "
+                "AND (target_type = 'thread' OR classifier_type = 'rule_inherited') "
+                "AND thread_key IN (SELECT thread_key FROM messages WHERE account_id = ? AND source_id = ?)",
+                (account_id, account_id, source_id),
+            )
+            old_ids = conn.execute(
+                "SELECT id FROM messages WHERE account_id = ? AND source_id = ?",
+                (account_id, source_id),
+            ).fetchall()
+            for (old_id,) in old_ids:
+                _delete_message_dependents(conn, old_id)
+            counts["replaced"] = len(old_ids)
+            conn.execute("DELETE FROM threads WHERE account_id = ? AND source_id = ?", (account_id, source_id))
+
         try:
             for mbox_key in keys:
                 str_key = str(mbox_key)
@@ -343,13 +414,8 @@ def ingest_mbox(
 
                 try:
                     raw_msg = mbox.get_message(mbox_key)
-                except Exception as exc:
-                    counts["errors"] += 1
-                    _record_ingest_error(
-                        conn,
-                        account_id=account_id,
-                        run_id=run_id,
-                        source_id=source_id,
+                except Exception as exc:  # noqa: BLE001 -- isolate malformed archive entries
+                    record_error(
                         mbox_key=str_key,
                         error_type=type(exc).__name__,
                         error_message="Failed to read message from source MBOX.",
@@ -358,13 +424,8 @@ def ingest_mbox(
 
                 try:
                     record = normalize_message(raw_msg, source_id, str_key, account_id)
-                except Exception as exc:
-                    counts["errors"] += 1
-                    _record_ingest_error(
-                        conn,
-                        account_id=account_id,
-                        run_id=run_id,
-                        source_id=source_id,
+                except Exception as exc:  # noqa: BLE001 -- retain safe per-message failure evidence
+                    record_error(
                         mbox_key=str_key,
                         error_type=type(exc).__name__,
                         error_message="Failed to normalize message.",
@@ -375,22 +436,20 @@ def ingest_mbox(
                     record["body_html"] = None
                 if record.get("body_text") and len(record["body_text"]) > max_body_chars:
                     record["body_text"] = record["body_text"][:max_body_chars]
+                    body = record["body_text"]
+                    record.update(body_hash=compute_body_hash(body), body_chars=len(body),
+                                  body_word_count=len(body.split()))
 
                 gmail_labels = record.pop("gmail_labels", [])
 
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                conn.execute("SAVEPOINT message_write")
+                msg_db_id = None
                 try:
-                    if force:
-                        existing = conn.execute(
-                            "SELECT id FROM messages WHERE account_id = ? AND source_id = ? AND mbox_key = ?",
-                            (record["account_id"], record["source_id"], record["mbox_key"]),
-                        ).fetchone()
-                        if existing:
-                            _delete_message_dependents(conn, existing[0])
-                            counts["replaced"] += 1
-
                     cursor = conn.execute(
                         """
-                        INSERT OR IGNORE INTO messages
+                        INSERT INTO messages
                           (account_id, source_id, mbox_key, message_id, thread_key, subject, sender,
                            recipients_json, cc_json, bcc_json, date_header, date_utc,
                            body_text, body_html, body_hash, body_chars, body_word_count,
@@ -400,16 +459,22 @@ def ingest_mbox(
                            :recipients_json, :cc_json, :bcc_json, :date_header, :date_utc,
                            :body_text, :body_html, :body_hash, :body_chars, :body_word_count,
                            :attachment_count, :raw_headers_json)
+                        ON CONFLICT(source_id, mbox_key) DO NOTHING
                         """,
                         record,
                     )
                     if cursor.rowcount > 0:
-                        counts["inserted"] += 1
                         msg_db_id = cursor.lastrowid
                         if msg_db_id is None:
                             raise RuntimeError("INSERT succeeded but cursor.lastrowid is None")
 
                         if record.get("thread_key"):
+                            if force:
+                                conn.execute(
+                                    "DELETE FROM classifications WHERE account_id = ? AND thread_key = ? "
+                                    "AND (target_type = 'thread' OR classifier_type = 'rule_inherited')",
+                                    (account_id, record["thread_key"]),
+                                )
                             participants = loads_address_list(record["recipients_json"])
                             if record.get("sender"):
                                 participants = [record["sender"]] + participants
@@ -424,7 +489,7 @@ def ingest_mbox(
 
                         if extract_attachments_flag and record.get("attachment_count", 0) > 0:
                             try:
-                                extract_attachments(
+                                attachments = extract_attachments(
                                     raw_msg, msg_db_id, source_id,
                                     account_id=account_id,
                                     account_key=account_key,
@@ -434,39 +499,40 @@ def ingest_mbox(
                                     conn=conn,
                                     extract_to_disk=True,
                                 )
-                            except Exception:
-                                counts["errors"] += 1
-                                _record_ingest_error(
-                                    conn,
-                                    account_id=account_id,
-                                    run_id=run_id,
-                                    source_id=source_id,
-                                    mbox_key=str_key,
-                                    error_type="AttachmentError",
-                                    error_message=(
-                                        "Failed to extract attachment metadata/content "
-                                        "to local storage."
-                                    ),
-                                )
-                    else:
-                        counts["skipped"] += 1
+                                if any(a["extraction_status"] == "error" for a in attachments):
+                                    raise AttachmentError("Attachment storage failed")
+                            except Exception as exc:
+                                raise AttachmentError("Attachment storage failed") from exc
+                    if msg_db_id is not None:
+                        created_paths.update(Path(row[0]) for row in conn.execute(
+                            "SELECT storage_path FROM attachments WHERE message_db_id = ? AND storage_path IS NOT NULL",
+                            (msg_db_id,),
+                        ))
+                    conn.execute("RELEASE message_write")
+                    counts["inserted" if cursor.rowcount > 0 else "skipped"] += 1
 
-                except Exception as exc:
-                    counts["errors"] += 1
-                    _record_ingest_error(
-                        conn,
-                        account_id=account_id,
-                        run_id=run_id,
-                        source_id=source_id,
+                except BaseException as exc:
+                    failed_paths = [Path(row[0]) for row in conn.execute(
+                        "SELECT storage_path FROM attachments WHERE message_db_id = ? AND storage_path IS NOT NULL",
+                        (msg_db_id,),
+                    )] if msg_db_id is not None else []
+                    conn.execute("ROLLBACK TO message_write")
+                    conn.execute("RELEASE message_write")
+                    for path in failed_paths:
+                        path.unlink(missing_ok=True)
+                    if not isinstance(exc, Exception):
+                        raise
+                    record_error(
                         mbox_key=str_key,
                         error_type=type(exc).__name__,
                         error_message="Failed to store normalized message evidence.",
                     )
                     continue
 
-                last_key_processed = str_key
+                if not checkpoint_blocked:
+                    last_key_processed = str_key
                 total_done = counts["inserted"] + counts["skipped"] + counts["errors"]
-                if total_done % batch_size == 0:
+                if not force and total_done % batch_size == 0:
                     _update_run(
                         conn, run_id,
                         last_mbox_key=last_key_processed,
@@ -476,8 +542,13 @@ def ingest_mbox(
                         errors_count=counts["errors"],
                     )
                     conn.commit()
+                    created_paths.clear()
 
         except KeyboardInterrupt:
+            if force:
+                rollback_replacement("interrupted")
+                print("\nReplacement interrupted; previous source evidence retained. Rerun with --force.")
+                return counts
             _update_run(
                 conn, run_id, status="interrupted",
                 last_mbox_key=last_key_processed,
@@ -487,8 +558,24 @@ def ingest_mbox(
                 errors_count=counts["errors"],
             )
             conn.commit()
+            created_paths.clear()
+            counts["status"] = "interrupted"
             print("\nInterrupted. Run with --resume to continue.")
             return counts
+
+        if force:
+            if _file_sha256(mbox_path) != expected_source_hash:
+                record_error(mbox_key=None, error_type="SourceIdentityError",
+                             error_message="Source changed while replacement was running.")
+            if counts["errors"]:
+                rollback_replacement("failed")
+                print("Replacement failed; previous source evidence retained. Rerun with --force.")
+                return counts
+            stat = mbox_path.stat()
+            conn.execute(
+                "UPDATE mbox_sources SET file_size = ?, file_sha256 = ?, source_mtime = ? WHERE id = ?",
+                (stat.st_size, expected_source_hash, stat.st_mtime, source_id),
+            )
 
         _update_run(
             conn, run_id, status="completed",
@@ -502,6 +589,8 @@ def ingest_mbox(
             "UPDATE ingest_runs SET finished_at = CURRENT_TIMESTAMP WHERE id = ?", (run_id,)
         )
         conn.commit()
+        created_paths.clear()
+        counts["status"] = "completed"
 
         replaced_note = f" ({counts['replaced']} replaced)" if force and counts["replaced"] else ""
         print(
@@ -511,4 +600,11 @@ def ingest_mbox(
         return counts
 
     finally:
+        conn.rollback()
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        if mbox is not None:
+            close = getattr(mbox, "close", None)
+            if close:
+                close()
         conn.close()
