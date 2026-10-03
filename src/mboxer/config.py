@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -22,21 +23,36 @@ def deep_get(data: dict[str, Any], dotted_path: str, default: Any = None) -> Any
     return current
 
 
+def example_config_text() -> str:
+    """Return the single bundled configuration example, also used as defaults."""
+    return files("mboxer").joinpath("defaults.yaml").read_text(encoding="utf-8")
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Load YAML config.
+    """Load an explicit file, a legacy local example, or bundled defaults.
 
-    If no config path is provided, use config/mboxer.example.yaml.
+    Explicit paths never fall back. A local config/mboxer.example.yaml retains
+    precedence for existing checkouts; config/mboxer.yaml requires --config.
     """
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        raise ConfigError(f"Config file not found: {config_path}")
+    config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    if path is not None or config_path.exists():
+        if not config_path.is_file():
+            raise ConfigError(f"Config file not found: {config_path}")
+        source = str(config_path)
+        text = config_path.read_text(encoding="utf-8")
+    else:
+        source = "bundled defaults.yaml"
+        text = example_config_text()
 
-    with config_path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        # Do not echo configuration values in an error (they may contain secrets).
+        raise ConfigError(f"Invalid YAML config: {source}") from exc
+    if data is None:
+        data = {}
     if not isinstance(data, dict):
-        raise ConfigError(f"Config root must be a mapping: {config_path}")
-
+        raise ConfigError(f"Config root must be a mapping: {source}")
     return data
 
 

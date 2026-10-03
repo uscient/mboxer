@@ -121,7 +121,7 @@ def run_cli(
 def cli_config(tmp_path: Path) -> Path:
     """The shipped example config with every path rooted under tmp_path, written
     to a YAML file the CLI can load."""
-    cfg = load_config("config/mboxer.example.yaml")
+    cfg = load_config()
     cfg["paths"] = {
         "database": str(tmp_path / "mboxer.sqlite"),
         "mbox_dir": str(tmp_path / "mboxes"),

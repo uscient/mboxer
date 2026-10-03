@@ -164,7 +164,7 @@ def _get_account_id(db_path: Path, account_key: str = "test-account") -> int:
 
 
 def _do_nlm_export(db_path, out_dir, config, account_key="test-account", export_profile=None):
-    example_config = load_config("config/mboxer.example.yaml")
+    example_config = load_config()
     limits = resolve_notebooklm_limits(example_config, "ultra_safe")
     account_id = _get_account_id(db_path, account_key)
     conn = sqlite3.connect(db_path)
@@ -203,7 +203,7 @@ def _run_jsonl_cli_export(
     out_path: Path,
     *,
     export_profile: str | None = None,
-    config_path: str | Path = "config/mboxer.example.yaml",
+    config_path: str | Path | None = None,
 ) -> None:
     from mboxer.cli import main as cli_main
 
@@ -213,13 +213,13 @@ def _run_jsonl_cli_export(
         "jsonl",
         "--db",
         str(db_path),
-        "--config",
-        str(config_path),
         "--account",
         "test-account",
         "--out",
         str(out_path),
     ]
+    if config_path is not None:
+        argv.extend(["--config", str(config_path)])
     if export_profile:
         argv.extend(["--export-profile", export_profile])
     monkeypatch.setattr(sys, "argv", argv)
@@ -905,18 +905,19 @@ def _run_nlm_cli_export(
     out_dir: Path,
     *,
     export_profile: str | None = None,
-    config_path: str | Path = "config/mboxer.example.yaml",
+    config_path: str | Path | None = None,
 ) -> None:
     from mboxer.cli import main as cli_main
 
     argv = [
         "mboxer", "export", "notebooklm",
         "--db", str(db_path),
-        "--config", str(config_path),
         "--account", "test-account",
         "--profile", "ultra_safe",
         "--out", str(out_dir),
     ]
+    if config_path is not None:
+        argv.extend(["--config", str(config_path)])
     if export_profile:
         argv.extend(["--export-profile", export_profile])
     monkeypatch.setattr(sys, "argv", argv)
@@ -972,7 +973,7 @@ def test_scrub_is_account_scoped(tmp_path):
     ingest_mbox(mbox_a, config=BASE_CONFIG, db_path=db_path, account_key="account-a")
     ingest_mbox(mbox_b, config=BASE_CONFIG, db_path=db_path, account_key="account-b")
 
-    example_config = load_config("config/mboxer.example.yaml")
+    example_config = load_config()
     limits = resolve_notebooklm_limits(example_config, "ultra_safe")
 
     conn = sqlite3.connect(db_path)

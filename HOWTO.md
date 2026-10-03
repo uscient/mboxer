@@ -5,8 +5,8 @@ NotebookLM (plus JSONL for RAG). This is the friendly step-by-step walkthrough; 
 the full reference and `docs/` for design detail.
 
 Every command below passes `--config config/mboxer.yaml`. If you omit `--config`, `mboxer` falls
-back to the bundled `config/mboxer.example.yaml`, so you can try the tool before writing your own
-config.
+back to the bundled defaults (or a legacy local `config/mboxer.example.yaml`, if present).
+You can try the installed tool from any directory before writing your own config.
 
 ## Phase 1: Preparation
 
@@ -32,7 +32,8 @@ mboxer --help
 ### 3. Configure mboxer
 
 ```bash
-cp config/mboxer.example.yaml config/mboxer.yaml
+mkdir -p config
+mboxer config-example > config/mboxer.yaml
 ```
 
 Edit `config/mboxer.yaml` to set your limit profile, locked taxonomy, classification rules, and
