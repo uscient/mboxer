@@ -1,15 +1,19 @@
 # Performance measurements
 
-Run the synthetic pipeline benchmark from a development install:
+Run from the repository root after the [development setup](../CONTRIBUTING.md):
 
 ```bash
-python scripts/benchmark.py --messages 1000 10000 --repeat 3 --output /tmp/mboxer-benchmark.json
+PYTHONPATH=src python scripts/benchmark.py --messages 1000 10000 --repeat 3 \
+  --batch-size 500 --output /tmp/mboxer-benchmark.json
 ```
 
 All archives, databases and exports are synthetic and confined to automatically
 removed temporary directories. The command does not read existing user archives
 or configuration. `--output` is the only retained file; omit it for JSON on stdout.
 The benchmark uses the existing runtime dependencies and Python standard library.
+`--messages` accepts one or more positive sizes; each size gets `--repeat` fresh
+workers. `--batch-size` controls the ingest batch size. This script uses a fixed
+in-memory configuration instead of loading a personal YAML file.
 
 Each repetition runs in a fresh process and measures these operations separately:
 
@@ -34,26 +38,38 @@ execution, not cold-disk throughput. Attachments, malformed mail, Markdown
 packing and multi-account concurrency are not represented by this workload.
 
 Compare the same workload, batch size, Python version and hardware across
-revisions. The report identifies the imported package directory and hashes the
-package's Python, SQL and YAML files plus the benchmark script. When comparing
-checkouts with a shared virtual environment, set `PYTHONPATH=/path/to/checkout/src`
+revisions. The report identifies the imported package directory and records
+separate hashes for the package's Python, SQL and YAML files and for the
+benchmark script. When comparing checkouts with a shared virtual environment,
+set `PYTHONPATH=/path/to/checkout/src`
 explicitly so an editable install cannot silently select another revision.
 Record the commit SHA alongside results. Use raw repetitions to assess
-variation before inferring improvements. Hosted-runner timing is informational;
-there is no arbitrary elapsed-time gate. Counts and integrity remain mandatory.
+variation before inferring improvements. The current CI workflow does not run
+this benchmark; run it explicitly when a performance comparison is needed. The
+script has no elapsed-time gate. Counts and integrity remain mandatory, and
+hosted-runner timing alone is weak evidence of a performance change.
 For meaningful archive-scale measurements, increase `--messages` on the intended
 local machine before changing memory layout, queries or batching defaults.
 
-## Consolidation measurements (2026-10-03)
+For export-specific allocation scaling, use the separate
+[memory benchmark](export-memory.md), which traces allocations and uses a
+different synthetic workload.
 
-The cleanup was compared with `dev` at `4259676` on Linux / Python 3.12.14,
+## Historical consolidation measurements (2026-10-03)
+
+The consolidation delivered in
+[PR #26](https://github.com/uscient/mboxer/pull/26) was compared with `4259676`
+(the then-current `dev`) on Linux / Python 3.12.14,
 using 4,000 synthetic messages and three fresh-process repetitions per revision.
 Median ingest was 0.748 → 0.745 seconds; JSONL was 3.681 → 3.689 seconds.
 All count/integrity checks passed and output byte counts matched. This supports
-behavior preservation, not a material end-to-end throughput improvement.
+behavior preservation on this workload, not a material end-to-end throughput
+improvement. These numbers describe that historical comparison; this document
+does not retain the raw sample reports or the exact measured after-change source
+hash. Rerun both revisions before making a new performance claim.
 
-The regex detector now counts matches with an iterator instead of retaining
-every match string. For `"synthetic@example.test " * 100_000`, peak traced Python
+That change also made the regex detector count matches with an iterator instead
+of retaining every match string. For `"synthetic@example.test " * 100_000`, peak traced Python
 allocation during `RegexDetector().detect(text)` fell from 7,102,410 to 2,364
 bytes with identical findings, count, and excerpt. The input was allocated before
 `tracemalloc.start()`. This isolated measurement concerns match storage; it does
