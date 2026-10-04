@@ -1,114 +1,65 @@
-# mboxer Architecture
+# MBoxer architecture
 
-`mboxer` is a local-first MBOX archive processor.
+MBoxer is a local-first Python command-line application. The implementation map
+is [PROJECT.md](../PROJECT.md).
 
-## Pipeline
+## Data flow
 
-```text
-MBOX files
-  → ingest
-  → normalize
-  → SQLite metadata store
-  → attachment extraction/tracking
-  → deterministic rules
-  → local LLM classification (planned, not yet wired)
-  → taxonomy governance
-  → security scan / scrubbing
-  → export profiles
-  → NotebookLM Markdown source packs
-  → RAG JSONL
-```
+An MBOX source belongs to an account. Ingest normalizes message headers and body
+text, records labels and thread membership, and optionally extracts attachments.
+SQLite stores both the normalized archive and the operational records needed to
+resume imports, classify messages, scan bodies, and regenerate exports.
 
-## Principles
+Rule classification runs at message or thread level. Thread assignments are
+inherited by their messages. Taxonomy review manages existing category proposals;
+the rule classifier does not generate them. LLM classification is not implemented.
 
-1. Raw email stays local by default.
-2. Ingest must be resumable.
-3. Multiple MBOX files may be imported into the same database.
-4. Attachments are first-class records, not opaque blobs.
-5. Categories are filesystem paths.
-6. The LLM may propose taxonomy changes, but stable categories should be governed.
-7. Exported files should be useful even when folder hierarchy is flattened.
-8. Security/scrubbing should be a pipeline stage, not an afterthought.
-9. NotebookLM limits must be config-driven.
-10. SQLite is local operational state and must not be shared with external systems.
-11. Data should leave through explicit exports or safe projections.
-12. Future API/import handoff destinations should be configured, not hard-coded.
+Security scanning records regex findings from message bodies. Export projection
+resolves an effective classification and content profile, applies configured
+redaction, and checks residual findings before publication. JSONL classification
+fields are a display option and do not switch off policy resolution.
 
-## Major components
+## Persistence and recovery
 
-```text
-src/mboxer/
-  cli.py
-  config.py
-  limits.py
-  naming.py
-  records.py
-  db/
-    schema.sql        # reference snapshot (CI-validated)
-    schema.py         # applies migrations
-    migrations/       # versioned schema migrations
-  ingest.py
-  attachments.py
-  normalize.py
-  taxonomy.py
-  classify.py
-  security/
-    scan.py
-    scrub.py
-    detectors.py
-    findings.py
-    policy.py
-  exporters/
-    notebooklm.py
-    jsonl.py
-    projection.py
-    manifest.py
-```
+The database is built from versioned migrations. A migration and its version
+record commit together. Ingest isolates failed message writes with savepoints;
+force replacement rolls back source changes if replacement fails. See
+[ingest integrity](ingest-integrity.md) and [schema](sqlite-schema.md).
 
-## Category directories
+JSONL and NotebookLM process bodies through disk-backed staging. NotebookLM packs
+complete rendered content against configured source, word, byte, and message
+limits. Dry runs use that same projection and packing calculation. Publication
+uses destination-local staging and restores the previous generation on handled
+failures. Process termination and power loss are separate recovery limitations;
+see [packing and publication](notebooklm-limits.md).
 
-Category paths are stored with `/` separators:
+NotebookLM output is grouped by account, category, and year:
 
 ```text
-medical/hospital-billing
-legal/law-firm-correspondence
-postal/usps-informed-delivery
-household/utilities/electric
-family/recipient-family/correspondence
+exports/notebooklm/<account-key>/<category-path>/<date-band>/<source-pack>.md
 ```
 
-The NotebookLM exporter writes category paths as directories:
+Manifests and database export records use shared lineage metadata construction.
+The metadata includes effective policy, limits, detector descriptors, config
+path references, exported-file hashes, and counts, rather than message bodies
+or security excerpts.
+The source-pack filenames carry category/date context even outside their folders.
 
-```text
-exports/notebooklm/<category-path>/<date-band>/<source-pack>.md
-```
+## Shared components
 
-The filename must contain enough context to remain meaningful outside the directory.
+Configuration comes from explicit YAML, a legacy local example, or the bundled
+`defaults.yaml`. Repeated path resolution is centralized; explicit files do not
+inherit bundled rules or taxonomy. The CLI exposes operation-specific overrides.
 
-## SQLite as durable state
+Shared MIME helpers decode encoded headers and select attachment parts. One
+file hashing helper streams SHA-256 for source identity and export lineage.
+One redaction rule registry supplies the scanner, scrubber, and manifest's
+redaction-switch names. Exporters share classification, projection, findings,
+and lineage helpers while retaining their format-specific renderers.
 
-SQLite is not just a cache. It is the local archive index.
+## Scope of current implementation
 
-It stores:
-
-- source MBOX files
-- ingest runs and checkpoints
-- message metadata
-- normalized bodies
-- attachment paths and extraction status
-- thread hints
-- category taxonomy
-- classification outputs
-- category proposals
-- security findings
-- export manifests
-
-This lets the user ingest once, reclassify many times, tune export profiles, and regenerate NotebookLM packs without rereading huge MBOX files.
-
-## External handoff boundaries
-
-NotebookLM Markdown and JSONL are standalone outputs. File-based delivery exists today; external API/import delivery is only a future direction.
-
-Future external API/import destinations should consume safe projections through explicit configured intake routes. Do not share the SQLite database directly with an external system, and do not hard-code a downstream service.
-
-No raw email body text, attachment payloads, local paths, account emails, or security excerpts should be emitted by default. Optional raw custody handoff, if ever added, should be explicit opt-in, default off, and separate from safe projection/export paths.
+All delivery is to local files. No upload, external API delivery, LLM service,
+web UI, attachment scanner, or malware detector is implemented. The body regex
+scanner does not certify metadata or attachments as safe. See
+[security behavior](security-roadmap.md) for the exact current profile meanings.

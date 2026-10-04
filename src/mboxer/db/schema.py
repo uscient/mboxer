@@ -21,6 +21,32 @@ def _existing_tables(conn: sqlite3.Connection) -> set[str]:
     }
 
 
+def _execute_statements(conn: sqlite3.Connection, sql: str) -> None:
+    """Execute migration SQL without executescript's implicit transaction commit."""
+    statement = ""
+    for fragment in sql.split(";"):
+        statement += fragment + ";"
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        conn.execute(statement)
+
+
+def _prepare_address_migration(conn: sqlite3.Connection) -> None:
+    # Older schemas used NULL for an absent address list. Preserve that meaning
+    # as an empty array; malformed non-NULL values must still fail validation.
+    conn.execute("UPDATE messages SET recipients_json = '[]' WHERE recipients_json IS NULL")
+    conn.execute("UPDATE messages SET cc_json = '[]' WHERE cc_json IS NULL")
+    conn.execute("UPDATE messages SET bcc_json = '[]' WHERE bcc_json IS NULL")
+    # The previous migration runner could leave this empty staging table after
+    # a failed 003 copy. Only remove the known empty artifact, never evidence.
+    if "messages_new" in _existing_tables(conn):
+        if conn.execute("SELECT 1 FROM messages_new LIMIT 1").fetchone():
+            raise RuntimeError("Nonempty messages_new requires manual migration recovery")
+        conn.execute("DROP TABLE messages_new")
+
+
 def apply_migrations(db_path: Path) -> list[str]:
     """Apply all pending migrations. Returns list of applied version strings."""
     db_path = Path(db_path)
@@ -52,18 +78,33 @@ def apply_migrations(db_path: Path) -> list[str]:
         applied: list[str] = []
         for mig_path in _list_migration_files():
             version = mig_path.stem
-            already = conn.execute(
-                "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
-            ).fetchone()
-            if already:
-                continue
             sql = mig_path.read_text(encoding="utf-8")
-            conn.executescript(sql)
-            conn.execute(
-                "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-            )
-            conn.commit()
-            applied.append(version)
+            # Table rebuilds need FK enforcement disabled before BEGIN; the
+            # complete database is checked before committing each migration.
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                already = conn.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+                ).fetchone()
+                if already:
+                    conn.rollback()
+                    continue
+                if version == "003_address_invariant":
+                    _prepare_address_migration(conn)
+                _execute_statements(conn, sql)
+                if conn.execute("PRAGMA foreign_key_check").fetchone():
+                    raise sqlite3.IntegrityError("Migration would leave invalid foreign keys")
+                conn.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                )
+                conn.commit()
+                applied.append(version)
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
 
         return applied
     finally:

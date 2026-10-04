@@ -2,6 +2,12 @@
 
 ## Commands
 
+After installing `.[dev]`, generate the synthetic fixture once:
+
+```bash
+python tests/fixtures/make_synthetic.py
+```
+
 | Goal | Command | ~time |
 |---|---|---|
 | Fast inner loop (pure units) | `pytest -m unit` | ~0.6s |
@@ -26,8 +32,9 @@ random order with `pytest -p randomly`; pytest-randomly prints `Using
 
     pytest -p randomly --randomly-seed=<N>
 
-CI runs random order as an informational canary (it surfaces order-dependence
-without blocking merges).
+The separate Random order workflow runs weekly and via `workflow_dispatch`; it surfaces
+order-dependence without adding another full-suite job to each PR. Failures make that
+workflow fail but do not gate merges.
 
 ## Coverage
 
@@ -58,3 +65,10 @@ importable helpers in `tests/_factories.py` (`make_mbox`, `base_config`,
 `make_attachment_message`). Reuse these instead of re-building setup. The synthetic
 corpus is `tests/fixtures/synthetic.mbox`, regenerated with
 `python tests/fixtures/make_synthetic.py`.
+
+## Installed distribution
+
+PR CI builds a distribution and runs `scripts/smoke_wheel.py` against the wheel in a fresh
+virtual environment and unrelated working directory. This verifies bundled defaults,
+console/module entrypoints, actual migrations, account persistence, and explicit config errors.
+Source-tree tests alone cannot verify package resources are shipped.

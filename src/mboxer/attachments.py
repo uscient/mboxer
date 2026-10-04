@@ -7,9 +7,29 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 
+from .accounts import validate_account_key
+from .mime import decode_header_parts, iter_attachments
 from .naming import slugify
 
 MAX_FILENAME_STEM = 120
+MAX_FILENAME_BYTES = 255
+
+
+def _fit_filename_bytes(filename: str, suffix: str = "") -> str:
+    """Keep a UTF-8 component within filesystem limits, including collision suffixes."""
+    stem, sep, ext = filename.rpartition(".")
+    if not sep:
+        stem, ext = filename, ""
+    else:
+        ext = "." + ext if ext or not suffix else ""
+    budget = MAX_FILENAME_BYTES - len(suffix.encode("utf-8")) - len(ext.encode("utf-8"))
+    if budget < len(stem[:1].encode("utf-8")):
+        # An oversized extension cannot be kept intact alongside even one stem
+        # character. Truncate the whole name instead, still reserving the suffix.
+        stem, ext = filename, ""
+        budget = MAX_FILENAME_BYTES - len(suffix.encode("utf-8"))
+    stem = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    return f"{stem}{suffix}{ext}"
 
 
 def _safe_attachment_filename(original: str | None, idx: int) -> str:
@@ -24,7 +44,7 @@ def _safe_attachment_filename(original: str | None, idx: int) -> str:
                 original = original[:MAX_FILENAME_STEM]
     if not original:
         original = f"attachment-{idx}"
-    return original
+    return _fit_filename_bytes(original)
 
 
 def _resolve_storage_path(
@@ -39,20 +59,13 @@ def _resolve_storage_path(
     candidate = dest_dir / safe_filename
     if not candidate.exists():
         return candidate
-    stem, sep, ext = safe_filename.rpartition(".")
-    if not sep:  # no '.' at all -> the whole name is the stem (rpartition puts it in `ext`)
-        stem, ext = safe_filename, ""
     counter = 1
     while True:
-        name = f"{stem}-{counter}.{ext}" if ext else f"{stem}-{counter}"
+        name = _fit_filename_bytes(safe_filename, suffix=f"-{counter}")
         candidate = dest_dir / name
         if not candidate.exists():
             return candidate
         counter += 1
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def attachment_output_path(
@@ -73,6 +86,7 @@ def attachment_output_path(
     path extraction actually writes, so multiple nameless attachments no longer
     collide on a single ``attachment-0`` path.
     """
+    validate_account_key(account_key)
     year = (date_str[:4] if date_str else None) or "undated"
     msg_slug = slugify(message_id, max_length=60) if message_id else "unknown"
     safe = _safe_attachment_filename(filename, idx)
@@ -92,54 +106,53 @@ def extract_attachments(
     conn: sqlite3.Connection,
     extract_to_disk: bool = True,
 ) -> list[dict[str, Any]]:
+    if extract_to_disk:
+        validate_account_key(account_key)
     year = (date_utc[:4] if date_utc else None) or "undated"
     msg_slug = slugify(message_id, max_length=60) if message_id else f"msg-{msg_db_id}"
     results: list[dict[str, Any]] = []
     idx = 0
 
-    for part in msg.walk():
+    for part in iter_attachments(msg):
         cd = (part.get_content_disposition() or "").lower()
-        if "attachment" not in cd and part.get_filename() is None:
-            continue
         ct = part.get_content_type()
         original_filename = part.get_filename()
 
         if original_filename:
-            from email.header import decode_header as _dh
-            decoded_parts = _dh(original_filename)
-            fname_parts: list[str] = []
-            for encoded, charset in decoded_parts:
-                if isinstance(encoded, bytes):
-                    enc = charset or "utf-8"
-                    try:
-                        fname_parts.append(encoded.decode(enc, errors="replace"))
-                    except LookupError:
-                        fname_parts.append(encoded.decode("latin-1", errors="replace"))
-                else:
-                    fname_parts.append(encoded)
-            original_filename = "".join(fname_parts)
+            original_filename = "".join(decode_header_parts(original_filename))
 
         payload = part.get_payload(decode=True)
         if not isinstance(payload, bytes):
             payload = b""
 
-        content_hash = _sha256_bytes(payload) if payload else None
+        content_hash = hashlib.sha256(payload).hexdigest() if payload else None
         safe_filename = _safe_attachment_filename(original_filename, idx)
         idx += 1
 
         storage_path: str | None = None
         extraction_status = "pending"
         error_message: str | None = None
+        dest: Path | None = None
+        dest_created = False
 
         if extract_to_disk and payload:
             try:
                 dest = _resolve_storage_path(
                     attachments_dir, account_key, year, msg_slug, safe_filename
                 )
-                dest.write_bytes(payload)
+                # Exclusive creation protects a path selected before another
+                # extractor wrote it. Cleanup must only remove our own file.
+                with dest.open("xb") as handle:
+                    dest_created = True
+                    handle.write(payload)
                 storage_path = str(dest)
                 extraction_status = "extracted"
-            except Exception as exc:
+            except BaseException as exc:
+                # Interrupts also require partial-file cleanup, then propagate.
+                if dest_created and dest is not None:
+                    dest.unlink(missing_ok=True)
+                if not isinstance(exc, Exception):
+                    raise
                 extraction_status = "error"
                 error_message = str(exc)
         elif not payload:
@@ -159,8 +172,9 @@ def extract_attachments(
             "extraction_status": extraction_status,
             "error_message": error_message,
         }
-        conn.execute(
-            """
+        try:
+            conn.execute(
+                """
             INSERT INTO attachments
               (account_id, message_db_id, source_id, original_filename, safe_filename,
                content_type, content_disposition, size_bytes, sha256,
@@ -169,9 +183,15 @@ def extract_attachments(
               (:account_id, :message_db_id, :source_id, :original_filename, :safe_filename,
                :content_type, :content_disposition, :size_bytes, :sha256,
                :storage_path, :extraction_status, :error_message)
-            """,
-            row,
-        )
+                """,
+                row,
+            )
+        except BaseException:
+            # Remove our file on any failed INSERT, including an interrupt;
+            # successful inserts must retain their extracted attachment.
+            if dest_created and dest is not None:
+                dest.unlink(missing_ok=True)
+            raise
         results.append(row)
 
     return results

@@ -120,7 +120,7 @@ def db_with_data(tmp_path):
 
 @pytest.fixture()
 def example_config():
-    return load_config("config/mboxer.example.yaml")
+    return load_config()
 
 
 # ── Unit: manifest builders ───────────────────────────────────────────────────
@@ -279,7 +279,7 @@ def test_write_jsonl_manifest_path(tmp_path):
 # ── Integration: NotebookLM manifest ─────────────────────────────────────────
 
 def _do_notebooklm_export(db_path, tmp_path, account_key="test-gmail", dry_run=False):
-    config = load_config("config/mboxer.example.yaml")
+    config = load_config()
     limits = resolve_notebooklm_limits(config, "ultra_safe")
     export_config = {
         **CLASSIFY_CONFIG,
@@ -477,7 +477,7 @@ def test_notebooklm_manifest_omits_attachment_contents(tmp_path):
         extract_attachments_flag=True,
     )
 
-    example_config = load_config("config/mboxer.example.yaml")
+    example_config = load_config()
     limits = resolve_notebooklm_limits(example_config, "ultra_safe")
     conn = sqlite3.connect(db_path)
     try:
@@ -780,3 +780,62 @@ def test_jsonl_manifest_thread_count(tmp_path, db_with_data):
     assert row["thread_count"] >= 1
     assert row["date_min"] != ""
     assert row["date_max"] != ""
+
+
+@pytest.mark.parametrize("export_kind", ["jsonl", "notebooklm"])
+def test_manifest_and_run_record_agree_on_overridden_policy(tmp_path, db_with_data, export_kind):
+    """Published lineage and local evidence must describe the same export run."""
+    config = load_config()
+    config["security"].update({
+        "default_export_profile": "reviewed",
+        "on_residual_findings": "block",
+        "redact_email_addresses": False,
+        "redact_phone_numbers": True,
+        "redact_ssn_like_numbers": False,
+        "redact_credit_card_like_numbers": True,
+    })
+    with sqlite3.connect(db_with_data) as conn:
+        account_id = conn.execute("SELECT id FROM accounts").fetchone()[0]
+        kwargs = dict(
+            account_id=account_id, account_key="test-gmail",
+            account_display_name="Synthetic account", export_profile="raw",
+            db_path=str(db_with_data), config_path=str(tmp_path / "private-config.yaml"),
+            findings_policy="allow",
+        )
+        if export_kind == "jsonl":
+            stats = export_jsonl(conn, config, tmp_path / "messages.jsonl", **kwargs)
+            manifest_path = stats["manifest_path"]
+        else:
+            stats = export_notebooklm(
+                conn, config, resolve_notebooklm_limits(config), tmp_path / "packs", **kwargs,
+            )
+            manifest_path = stats["manifest_json"]
+        metadata = json.loads(conn.execute("SELECT metadata_json FROM exports").fetchone()[0])
+
+    expected = {
+        "export_kind": export_kind,
+        "account_key": "test-gmail",
+        "account_display_name": "Synthetic account",
+        "source_database_path": db_with_data.name,
+        "source_config_path": "private-config.yaml",
+        "export_profile_override": "raw",
+        "effective_default_export_profile": "raw",
+        "security_profile": "reviewed",
+        "residual_findings_policy": "allow",
+        "residual_scan_performed": True,
+        "candidate_message_count": 2,
+        "excluded_message_count": 0,
+    }
+    rows = json.loads(Path(manifest_path).read_text())
+    assert rows
+    for row in rows:
+        assert {key: row[key] for key in expected} == expected
+        assert {key: metadata[key] for key in expected} == expected
+        for field in ("redaction_policy", "export_format", "limit_settings", "split_strategy"):
+            assert json.loads(row[f"{field}_json"]) == metadata[field]
+    assert metadata["redaction_policy"] == {
+        "redact_email_addresses": False,
+        "redact_phone_numbers": True,
+        "redact_ssn_like_numbers": False,
+        "redact_credit_card_like_numbers": True,
+    }

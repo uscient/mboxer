@@ -1,5 +1,5 @@
--- Authoritative full schema (fresh install target).
--- Migrations in db/migrations/ produce this same state incrementally.
+-- Reference schema. Runtime installs and upgrades use db/migrations/.
+-- Nullable account IDs retain unassigned legacy evidence.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 CREATE TABLE IF NOT EXISTS mbox_sources (
     id INTEGER PRIMARY KEY,
-    account_id INTEGER NOT NULL,
+    account_id INTEGER,
     source_name TEXT NOT NULL,
     source_slug TEXT NOT NULL,
     file_path TEXT NOT NULL,
@@ -30,10 +30,13 @@ CREATE TABLE IF NOT EXISTS mbox_sources (
     provider TEXT DEFAULT 'gmail',
     imported_label_hint TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(account_id) REFERENCES accounts(id),
     UNIQUE(account_id, file_path)
 );
+
+CREATE INDEX idx_mbox_sources_account ON mbox_sources(account_id);
+CREATE UNIQUE INDEX idx_mbox_sources_legacy_path ON mbox_sources(file_path)
+    WHERE account_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS ingest_runs (
     id INTEGER PRIMARY KEY,
@@ -67,7 +70,7 @@ CREATE TABLE IF NOT EXISTS ingest_errors (
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
-    account_id INTEGER NOT NULL,
+    account_id INTEGER,
     source_id INTEGER NOT NULL,
     mbox_key TEXT NOT NULL,
     message_id TEXT,
@@ -90,8 +93,11 @@ CREATE TABLE IF NOT EXISTS messages (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(account_id) REFERENCES accounts(id),
     FOREIGN KEY(source_id) REFERENCES mbox_sources(id),
-    UNIQUE(account_id, source_id, mbox_key)
+    UNIQUE(source_id, mbox_key)
 );
+
+CREATE UNIQUE INDEX idx_messages_account_source_mbox_key
+    ON messages(account_id, source_id, mbox_key) WHERE account_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id);
 CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
@@ -115,7 +121,7 @@ CREATE TABLE IF NOT EXISTS threads (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(account_id) REFERENCES accounts(id),
     FOREIGN KEY(source_id) REFERENCES mbox_sources(id),
-    UNIQUE(account_id, thread_key, source_id)
+    UNIQUE(thread_key, source_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_threads_source ON threads(source_id);
@@ -257,6 +263,10 @@ CREATE INDEX IF NOT EXISTS idx_classifications_message ON classifications(messag
 CREATE INDEX IF NOT EXISTS idx_classifications_thread ON classifications(thread_key);
 CREATE INDEX IF NOT EXISTS idx_classifications_category ON classifications(category_path);
 CREATE INDEX IF NOT EXISTS idx_classifications_account ON classifications(account_id);
+CREATE INDEX idx_classifications_account_message_type
+    ON classifications(account_id, message_db_id, classifier_type);
+CREATE INDEX idx_classifications_account_thread_type
+    ON classifications(account_id, thread_key, target_type, classifier_type);
 
 CREATE TABLE IF NOT EXISTS category_proposals (
     id INTEGER PRIMARY KEY,
@@ -295,6 +305,8 @@ CREATE INDEX IF NOT EXISTS idx_security_message ON security_findings(message_db_
 CREATE INDEX IF NOT EXISTS idx_security_attachment ON security_findings(attachment_id);
 CREATE INDEX IF NOT EXISTS idx_security_type ON security_findings(finding_type);
 CREATE INDEX IF NOT EXISTS idx_security_account ON security_findings(account_id);
+CREATE INDEX idx_security_account_message
+    ON security_findings(account_id, message_db_id);
 
 CREATE TABLE IF NOT EXISTS exports (
     id INTEGER PRIMARY KEY,

@@ -1,11 +1,38 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Any
 
 
 class AccountError(RuntimeError):
     """Raised when account resolution or validation fails."""
+
+
+def validate_account_key(account_key: str) -> None:
+    """Require an unchanged, portable single directory component.
+
+    Account keys are durable identities as well as output directory names.
+    Reject unsafe keys instead of normalizing them into another account's key.
+    Existing rows remain readable so their identity can be repaired explicitly.
+    """
+    reserved = re.fullmatch(
+        r"(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])",
+        account_key.split(".", 1)[0].rstrip(" "),
+        flags=re.IGNORECASE,
+    )
+    if (
+        not account_key
+        or account_key in (".", "..")
+        or account_key.endswith((".", " "))
+        or any(char in '<>:"/\\|?*' or not char.isprintable() for char in account_key)
+        or reserved
+        or len(account_key.encode("utf-8")) > 255
+    ):
+        raise AccountError(
+            "Unsafe account key: use one directory name without path separators, "
+            "reserved filenames, or trailing dots/spaces; existing keys are not renamed."
+        )
 
 
 def create_account(
@@ -17,6 +44,7 @@ def create_account(
     provider: str = "gmail",
     notes: str | None = None,
 ) -> int:
+    validate_account_key(account_key)
     conn.execute(
         """
         INSERT INTO accounts (account_key, display_name, email_address, provider, notes)
@@ -36,21 +64,19 @@ def update_account(
     email_address: str | None = None,
     notes: str | None = None,
 ) -> bool:
-    updates: dict[str, Any] = {}
-    if display_name is not None:
-        updates["display_name"] = display_name
-    if email_address is not None:
-        updates["email_address"] = email_address
-    if notes is not None:
-        updates["notes"] = notes
-    if not updates:
+    if display_name is None and email_address is None and notes is None:
         return False
-    updates["updated_at"] = "CURRENT_TIMESTAMP"
-    sets = ", ".join(f"{k} = :{k}" for k in updates if k != "updated_at")
-    sets += ", updated_at = CURRENT_TIMESTAMP"
-    params = {k: v for k, v in updates.items() if k != "updated_at"}
-    params["_key"] = account_key
-    cursor = conn.execute(f"UPDATE accounts SET {sets} WHERE account_key = :_key", params)
+    cursor = conn.execute(
+        """
+        UPDATE accounts
+        SET display_name = COALESCE(?, display_name),
+            email_address = COALESCE(?, email_address),
+            notes = COALESCE(?, notes),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE account_key = ?
+        """,
+        (display_name, email_address, notes, account_key),
+    )
     conn.commit()
     return cursor.rowcount > 0
 
@@ -134,12 +160,3 @@ def resolve_account(
         f"{command} requires --account when multiple accounts exist.\n"
         f"Available: {keys}"
     )
-
-
-def ensure_default_account(conn: sqlite3.Connection, account_key: str = "default") -> dict[str, Any]:
-    """Create a default account for legacy data migration if it doesn't exist."""
-    existing = get_account(conn, account_key)
-    if existing:
-        return existing
-    create_account(conn, account_key, display_name="Default (legacy migration)")
-    return get_account(conn, account_key)  # type: ignore[return-value]

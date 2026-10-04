@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Protocol
 
-Finding = dict[str, Any]
+from .patterns import REDACTION_RULES
 
-_PATTERNS = {
-    "email_address": re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"),
-    "phone_number": re.compile(r"\b(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b"),
-    "ssn_like": re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b"),
-    "credit_card_like": re.compile(r"\b(?:\d{4}[\s\-]){3}\d{4}\b"),
-}
+Finding = dict[str, Any]
 
 
 class Detector(Protocol):
@@ -27,15 +21,16 @@ class RegexDetector:
 
     def detect(self, text: str) -> list[Finding]:
         out: list[Finding] = []
-        for finding_type, pattern in _PATTERNS.items():
-            matches = pattern.findall(text)
-            if matches:
+        for rule in REDACTION_RULES:
+            matches = rule.pattern.finditer(text)
+            first = next(matches, None)
+            if first is not None:
                 out.append({
-                    "finding_type": finding_type,
+                    "finding_type": rule.finding_type,
                     "severity": "medium",
                     "detector": "regex",
-                    "excerpt": matches[0][:100],
-                    "count": len(matches),
+                    "excerpt": first.group()[:100],
+                    "count": 1 + sum(1 for _ in matches),
                     "kind": "regex",
                     "version": 1,
                 })
