@@ -508,6 +508,9 @@ def ingest_mbox(
                     counts["inserted" if cursor.rowcount > 0 else "skipped"] += 1
 
                 except BaseException as exc:
+                    # Roll back incomplete evidence even on interrupt: the outer
+                    # KeyboardInterrupt handler commits completed messages and
+                    # the checkpoint. Non-Exception exits propagate after cleanup.
                     failed_paths = [Path(row[0]) for row in conn.execute(
                         "SELECT storage_path FROM attachments WHERE message_db_id = ? AND storage_path IS NOT NULL",
                         (msg_db_id,),

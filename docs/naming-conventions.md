@@ -103,3 +103,9 @@ data/attachments/primary-gmail/2024/message-001-example-com/invoice-2024-03.pdf
 ```
 
 Never assume attachment filenames are safe or unique.
+
+Sanitized attachment filenames fit within 255 UTF-8 bytes per path component.
+Truncation preserves complete Unicode characters and a short extension where
+possible. Collision suffixes such as `-1` share the same byte budget, so duplicate
+multibyte names remain writable without overwriting earlier payloads. Existing
+short ASCII names keep their spelling. The original filename remains in SQLite.

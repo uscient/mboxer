@@ -12,6 +12,24 @@ from .mime import decode_header_parts, iter_attachments
 from .naming import slugify
 
 MAX_FILENAME_STEM = 120
+MAX_FILENAME_BYTES = 255
+
+
+def _fit_filename_bytes(filename: str, suffix: str = "") -> str:
+    """Keep a UTF-8 component within filesystem limits, including collision suffixes."""
+    stem, sep, ext = filename.rpartition(".")
+    if not sep:
+        stem, ext = filename, ""
+    else:
+        ext = "." + ext if ext or not suffix else ""
+    budget = MAX_FILENAME_BYTES - len(suffix.encode("utf-8")) - len(ext.encode("utf-8"))
+    if budget < len(stem[:1].encode("utf-8")):
+        # An oversized extension cannot be kept intact alongside even one stem
+        # character. Truncate the whole name instead, still reserving the suffix.
+        stem, ext = filename, ""
+        budget = MAX_FILENAME_BYTES - len(suffix.encode("utf-8"))
+    stem = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    return f"{stem}{suffix}{ext}"
 
 
 def _safe_attachment_filename(original: str | None, idx: int) -> str:
@@ -26,7 +44,7 @@ def _safe_attachment_filename(original: str | None, idx: int) -> str:
                 original = original[:MAX_FILENAME_STEM]
     if not original:
         original = f"attachment-{idx}"
-    return original
+    return _fit_filename_bytes(original)
 
 
 def _resolve_storage_path(
@@ -41,12 +59,9 @@ def _resolve_storage_path(
     candidate = dest_dir / safe_filename
     if not candidate.exists():
         return candidate
-    stem, sep, ext = safe_filename.rpartition(".")
-    if not sep:  # no '.' at all -> the whole name is the stem (rpartition puts it in `ext`)
-        stem, ext = safe_filename, ""
     counter = 1
     while True:
-        name = f"{stem}-{counter}.{ext}" if ext else f"{stem}-{counter}"
+        name = _fit_filename_bytes(safe_filename, suffix=f"-{counter}")
         candidate = dest_dir / name
         if not candidate.exists():
             return candidate
@@ -133,6 +148,7 @@ def extract_attachments(
                 storage_path = str(dest)
                 extraction_status = "extracted"
             except BaseException as exc:
+                # Interrupts also require partial-file cleanup, then propagate.
                 if dest_created and dest is not None:
                     dest.unlink(missing_ok=True)
                 if not isinstance(exc, Exception):
@@ -171,6 +187,8 @@ def extract_attachments(
                 row,
             )
         except BaseException:
+            # Remove our file on any failed INSERT, including an interrupt;
+            # successful inserts must retain their extracted attachment.
             if dest_created and dest is not None:
                 dest.unlink(missing_ok=True)
             raise

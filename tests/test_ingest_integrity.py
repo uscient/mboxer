@@ -11,7 +11,6 @@ import pytest
 
 import mboxer.ingest as ingest_module
 from mboxer.classify import run_rule_classification
-from mboxer.ingest import SourceIdentityError, ingest_mbox
 
 
 def _write(path, subjects, *, id_prefix="message", reply_to=None):
@@ -31,7 +30,7 @@ def _write(path, subjects, *, id_prefix="message", reply_to=None):
 
 
 def _run(path, db, config, **kwargs):
-    return ingest_mbox(path, db_path=db, config=config, account_key="test-gmail", **kwargs)
+    return ingest_module.ingest_mbox(path, db_path=db, config=config, account_key="test-gmail", **kwargs)
 
 
 def _rows(db, sql):
@@ -45,7 +44,7 @@ def test_same_archive_path_is_independent_per_account(tmp_path, tmp_db, make_acc
     path = tmp_path / "source.mbox"
     _write(path, ["Original"])
     _run(path, tmp_db, config)
-    ingest_mbox(path, db_path=tmp_db, config=config, account_key="other")
+    ingest_module.ingest_mbox(path, db_path=tmp_db, config=config, account_key="other")
     _write(path, ["Replacement"])
     _run(path, tmp_db, config, force=True)
     assert _rows(tmp_db, "SELECT a.account_key, m.subject FROM messages m JOIN accounts a ON a.id=m.account_id ORDER BY a.account_key") == [
@@ -93,7 +92,7 @@ def test_force_failure_preserves_original_evidence_and_identity(
     assert _rows(tmp_db, "SELECT status, last_mbox_key FROM ingest_runs ORDER BY id DESC LIMIT 1") == [
         ("interrupted" if failure == "interrupt" else "failed", None),
     ]
-    with pytest.raises(SourceIdentityError):
+    with pytest.raises(ingest_module.SourceIdentityError):
         _run(path, tmp_db, config)
 
 
@@ -160,7 +159,7 @@ def test_force_reclassifies_affected_threads_and_preserves_other_account(
     _write(other_source, ["Old"])
     _run(path, tmp_db, config)
     _run(other_source, tmp_db, config)
-    ingest_mbox(path, db_path=tmp_db, config=config, account_key="other")
+    ingest_module.ingest_mbox(path, db_path=tmp_db, config=config, account_key="other")
     with sqlite3.connect(tmp_db) as conn:
         run_rule_classification(conn, config, level="thread", account_id=account_id)
         run_rule_classification(conn, config, level="thread", account_id=other_id)
