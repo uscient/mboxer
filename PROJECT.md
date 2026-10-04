@@ -8,17 +8,18 @@ the same entrypoint. Runtime code lives in `src/mboxer/`.
 | CLI and configuration | `cli.py`, `config.py`, `defaults.yaml` | `test_cli.py`, `test_config.py`, `test_first_run.py` |
 | Accounts and safe names | `accounts.py`, `naming.py` | `test_accounts.py`, `test_naming.py`, `test_properties.py` |
 | SQLite initialization | `db/schema.py`, `db/migrations/` | `test_db.py`, `test_migration*.py` |
-| Ingest and recovery | `ingest.py` | `test_ingest*.py` |
-| Message decoding | `normalize.py`, `attachments.py`, `mime.py`, `records.py` | `test_normalize.py`, `test_attachments.py`, `test_address_invariant.py` |
+| Ingest and recovery | `ingest.py` | `test_ingest*.py`, `test_interrupt_cleanup.py` |
+| Message decoding and attachment storage | `normalize.py`, `attachments.py`, `mime.py`, `records.py` | `test_normalize.py`, `test_attachments.py`, `test_ingest_attachment_filenames.py`, `test_address_invariant.py` |
 | Rule classification and taxonomy | `classify.py`, `taxonomy.py` | `test_classify.py`, `test_thread_classify.py`, `test_taxonomy.py` |
-| Detection, redaction, and policy | `security/` | `test_scrub_export.py`, `test_findings_gate.py`, `test_policy_resolution.py` |
+| Detection, redaction, and policy | `security/` | `test_security_patterns.py`, `test_scrub_export.py`, `test_findings_gate.py`, `test_policy_resolution.py` |
 | Effective export classification | `exporters/classification.py` | `test_policy_resolution.py`, `test_export_boundaries.py` |
 | Record projection | `exporters/projection.py` | `test_scrub_export.py`, `test_streaming_export.py` |
 | JSONL and NotebookLM | `exporters/jsonl.py`, `exporters/notebooklm.py`, `limits.py` | `test_export*.py`, `test_notebooklm_packing.py`, `test_limits.py` |
 | Publication and recovery | `exporters/publication.py` | `test_publication.py` |
 | File manifests and database lineage | `exporters/manifest.py` | `test_manifest.py`, `test_e2e_pipeline.py` |
 
-Test paths above are relative to `tests/`. The migration-built schema is the
+Implementation paths above are relative to `src/mboxer/`; test paths are relative
+to `tests/`. The migration-built schema is the
 runtime source; `db/schema.sql` is a reference snapshot compared against it by
 the migration tests.
 
@@ -42,14 +43,21 @@ the migration tests.
 
 ## Detailed references
 
+- [Configuration and active settings](docs/configuration.md)
 - [Architecture](docs/architecture.md)
 - [Ingest integrity](docs/ingest-integrity.md)
 - [SQLite schema](docs/sqlite-schema.md)
+- [Naming and attachment filenames](docs/naming-conventions.md)
 - [NotebookLM packing and publication](docs/notebooklm-limits.md)
 - [Security behavior and remaining work](docs/security-roadmap.md)
 - [Performance](docs/performance.md) and [export memory](docs/export-memory.md)
+- [Maintenance findings and completed work](docs/maintenance-audit.md)
+
+User setup and CLI examples are in [README.md](README.md) and the
+[first-run walkthrough](HOWTO.md). [tests/README.md](tests/README.md) covers
+fixtures, focused checks, randomized order, and golden-output verification.
 
 `scripts/benchmark.py` and `scripts/benchmark_memory.py` measure synthetic
 workloads. `scripts/smoke_wheel.py` exercises an installed package outside the
 checkout. Development commands and CI are described in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md), including the GitHub Release → PyPI sequence.

@@ -1,734 +1,360 @@
 # mboxer
 
-Create **NotebookLM-ready Markdown source packs** from **Gmail MBOX exports**, with local SQLite storage, JSONL exports, and CSV/JSON manifests for search, RAG, and archive review.
+MBoxer turns Gmail/Google Takeout MBOX archives into local SQLite records,
+NotebookLM-oriented Markdown source packs, and JSONL for RAG or archive review.
+Ingest, classification, scanning, and export run locally through explicit CLI
+commands. MBoxer does not upload mail or call an LLM.
 
-`mboxer` is a local-first email archive processor designed around a common problem:
+The main workflow is **MBOX → SQLite → rules → body scan → local exports**.
+Inspect the output before choosing what to share with another service.
 
-```text
-You can export Gmail as an MBOX file,
-but a raw MBOX archive is not useful for NotebookLM, RAG, review, or analysis.
-```
+## What it does
 
-`mboxer` turns that raw archive into organized, structured, reusable knowledge assets.
+- Ingests normalized messages, Gmail labels, thread metadata, and optional
+  attachments into an account-scoped local archive.
+- Resumes interrupted ingest, avoids duplicate insertion on repeated ingest,
+  and supports transactional replacement of a changed source.
+- Classifies messages or threads using ordered YAML rules, with thread-to-message
+  inheritance and explicit export content policies.
+- Scans stored body text and redacts configured regex patterns during export.
+- Packs Markdown by account, category, and year within configured file and source
+  budgets; exports message records as JSONL.
+- Records export lineage in SQLite and adjacent manifests, and removes obsolete
+  managed NotebookLM packs on successful re-export.
 
-```text
-Gmail / Google Takeout
-  → MBOX file
-  → local SQLite index
-  → organized Markdown source packs
-  → NotebookLM, RAG, search, review, JSONL, and future tools
-```
+Python 3.11 or newer is required; CI tests Python 3.11 and 3.12. The distribution
+name is `uscient-mboxer`; the import and CLI name are `mboxer`.
 
-## Why this exists
+[HOWTO.md](HOWTO.md) is the first-run walkthrough.
+[PROJECT.md](PROJECT.md) maps the implementation.
+[Architecture](docs/architecture.md) describes storage and processing boundaries.
 
-Gmail archives often contain years of valuable personal, professional, legal, financial, operational, project, and organizational history.
+## Install the released package
 
-Google Takeout makes it possible to export that history as an `.mbox` file, but the exported file is not immediately useful for modern AI workflows.
-
-NotebookLM works best with readable, focused, well-organized source documents.
-
-RAG systems work best with structured, chunkable records.
-
-Spreadsheets work best with clean rows and metadata.
-
-Local review works best when everything is inspectable before anything is uploaded.
-
-`mboxer` bridges that gap.
-
-## Primary use case: Gmail MBOX to NotebookLM
-
-The main selling point of `mboxer` is converting Gmail MBOX exports into clean, category-organized Markdown files that can be used as NotebookLM sources.
-
-Instead of uploading one giant raw archive, `mboxer` creates structured source packs like:
-
-```text
-exports/notebooklm/
-  primary-gmail/                 # output is nested under the account key
-    finance/
-      invoices/
-        2024/
-          finance-invoices-2024-001.md
-    legal/
-      contracts/
-        2023-2024/
-          legal-contracts-2023-2024-001.md
-    projects/
-      product-launch/
-        2026/
-          projects-product-launch-2026-001.md
-    operations/
-      vendor-correspondence/
-        2025/
-          operations-vendor-correspondence-2025-001.md
-```
-
-The goal is to make exported Gmail content easier to:
-
-- upload into NotebookLM
-- organize by topic or category
-- review before upload
-- split into useful source packs
-- preserve context from email threads
-- exclude sensitive or irrelevant material
-- reuse later for RAG, search, or analysis
-
-## What `mboxer` produces
-
-### NotebookLM Markdown source packs
-
-Markdown is the primary output format.
-
-Each exported file preserves useful email context:
-
-- subject
-- sender, date, and message ID
-- category and source account in the pack header
-- body text after the selected export projection
-
-Recipient lists and attachment references remain in SQLite; the current
-NotebookLM renderer does not include them in Markdown packs.
-
-Export output is split by category, year, and size band to respect NotebookLM source limits.
-A CSV manifest (`manifest.csv`) and JSON manifest (`manifest.json`) are written under
-`<out>/<account-key>/` for each export run.
-Re-export replaces the account's managed generation and removes obsolete packs
-listed in its prior manifest. Packing counts complete rendered files and fails
-before publication if the configured source budget cannot hold the full export.
-See [limits and publication behavior](docs/notebooklm-limits.md) for ownership,
-recovery, and temporary disk requirements.
-
-### SQLite database
-
-SQLite is the durable local project index.
-
-The schema tracks:
-
-- accounts and MBOX sources
-- messages with normalized metadata and body text
-- Gmail label associations
-- thread groupings with participant and date ranges
-- ingest runs with resumable checkpoint keys
-- ingest errors per run
-- attachments with SHA-256, content type, and extraction status
-- classifications per message and per thread
-- category taxonomy with locked/global flags
-- category proposals for review and approval
-- export items and export run records
-- security findings per message
-
-### JSONL exports
-
-JSONL is intended for RAG pipelines, embeddings, local LLM tools, and structured downstream processing.
-
-Each line represents one message with clean body text, metadata, and classification context.
-Account key is injected into the output path automatically to keep multi-account exports separated,
-and a `<name>.manifest.json` is written alongside the JSONL file.
-
-### Other output formats
-
-Row-per-message CSV export and external API delivery are not implemented. CSV
-manifests describe exported source packs; they are not message-data exports.
-
-## Current implementation status
-
-The core pipeline is implemented and working.
-
-Implemented:
-
-- MBOX ingest into SQLite using Python's `mailbox` stdlib
-- resumable ingest with per-run checkpoint keys and batch commits
-- deduplication via `INSERT OR IGNORE` on message identity
-- multi-account separation with per-account keyed storage
-- message normalization: subject, sender, recipients, dates, body text, body hash, word count
-- Gmail label parsing and storage
-- thread grouping with participant aggregation and date ranges
-- attachment extraction to disk with SHA-256 and content-type tracking
-- rule-based classification at both message and thread level
-- thread-level rule classification with message inheritance
-- `assign` (confidence 1.0) and `assign_hint` (confidence 0.75) rule actions
-- category taxonomy with locked categories and proposal workflow
-- category review, approval, and rejection via CLI
-- security scan and scrub hooks
-- five export content profiles: `raw`, `reviewed`, `scrubbed`, `metadata-only`, `exclude`
-- residual-findings export gate (`allow` / `warn` / `block`) that re-scans projected export text
-- NotebookLM Markdown export with category directories, year bands, and size-limit profiles
-- export dry-run mode
-- JSONL export
-- CSV + JSON export manifests with provenance/lineage fields
-- five NotebookLM limit profiles: `standard`, `plus`, `pro`, `ultra`, `ultra_safe`
-- CLI with subcommands for all pipeline stages
-- YAML config loading with deep (dotted) key access
-- `pyproject.toml` packaging with an optional `dev` extra; version derived from git tags via setuptools-scm
-
-Not implemented: LLM classification, automatic category proposals, a web UI,
-row-per-message CSV, and external delivery. The application currently uses
-explicit local commands for ingest, classification, scanning, and export.
-
-## Project identity
-
-```text
-Project name:      mboxer
-Python package:    mboxer
-CLI command:       mboxer
-Default database:  var/mboxer.sqlite
-Entry point:       mboxer.cli:main
-Module entry:      python -m mboxer
-Python requires:   >=3.11 (tested on 3.11 and 3.12)
-Versioning:        git tags via setuptools-scm
-```
-
-## Implementation
-
-[PROJECT.md](PROJECT.md) maps the source modules, shared components, and tests.
-[Architecture](docs/architecture.md) describes data flow and storage boundaries.
-
-## Quick start
+In a POSIX shell:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-
-pip install -e .
-
+python -m pip install uscient-mboxer
 mboxer --help
 ```
 
-Copy and customize the example config:
+The installed package includes its configuration example and database migrations.
+The synthetic fixture generator used below is part of the source checkout.
+
+## Quick start with synthetic mail
+
+Run these commands from a source checkout in a POSIX shell:
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+
 mkdir -p config
 mboxer config-example > config/mboxer.yaml
-```
+python tests/fixtures/make_synthetic.py
 
-> Without `--config`, mboxer loads a legacy local `config/mboxer.example.yaml` if present,
-> otherwise the bundled defaults. This works from any directory after installation.
-> Pass `--config config/mboxer.yaml` to use your edited configuration.
-
-## First run
-
-Complete walkthrough from a fresh checkout to a dry-run export.
-
-**1. Initialize the database**
-
-```bash
 mboxer init-db --config config/mboxer.yaml
+mboxer account add demo --config config/mboxer.yaml
+mboxer ingest tests/fixtures/synthetic.mbox \
+  --config config/mboxer.yaml --account demo --source-name Synthetic
+mboxer classify --config config/mboxer.yaml --account demo
+mboxer review-categories --config config/mboxer.yaml --account demo
+mboxer security-scan --config config/mboxer.yaml --account demo
+mboxer export notebooklm --config config/mboxer.yaml --account demo --dry-run
+mboxer export notebooklm --config config/mboxer.yaml --account demo
+mboxer export jsonl --config config/mboxer.yaml --account demo
 ```
 
-**2. Register your account**
+This creates a demonstration account in `var/mboxer.sqlite`, Markdown under
+`exports/notebooklm/demo/`, and JSONL at `exports/rag/demo/messages.jsonl`.
+The walkthrough explains how to add a separate account for a real archive.
+Do not overwrite an existing customized configuration with `config-example`.
+
+`python -m mboxer` provides the same CLI as `mboxer`. Use `mboxer --help` and
+subcommand help, such as `mboxer export notebooklm --help`, for available flags.
+
+## Configuration
+
+Print the canonical example with `mboxer config-example`; its packaged source is
+[src/mboxer/defaults.yaml](src/mboxer/defaults.yaml).
+
+- `--config PATH` selects an explicit YAML file. A missing or invalid explicit
+  file is an error.
+- Without `--config`, `config/mboxer.example.yaml` in the working directory takes
+  precedence over bundled defaults. `config/mboxer.yaml` is never auto-selected.
+- `--db PATH` overrides the database path. Otherwise MBoxer uses `paths.database`,
+  the legacy `project.default_database`, then `var/mboxer.sqlite`.
+- Relative configuration and data paths are relative to the working directory,
+  not the YAML file's directory. Common flags follow the selected command.
+- A user configuration is not merged wholesale with the example. Individual
+  settings have fallbacks, but omitted rules and NotebookLM profile definitions
+  are not silently imported. Start from the printed example.
+
+The configuration controls paths, ingest batch size and body retention,
+classification level and rules, taxonomy seeds, body redaction, and export
+settings. `classification.level` defaults to `thread`; `--level message|thread`
+overrides it. Resume and attachment extraction are explicit ingest flags.
+There is no environment-variable configuration layer. In a partial custom YAML,
+omitted `security.redact_*` flags are off; `scrub_enabled: true` alone does not
+enable them. The printed example enables all four current redaction types.
+
+**Body retention matters:** `ingest.max_body_chars` defaults to 50,000 characters
+per normalized message body; longer bodies are truncated during ingest.
+`ingest.store_body_html` defaults to `false`. Even a `raw` export contains the
+stored normalized body, not the original MIME message. Keep the original MBOX
+when full source fidelity is needed.
+
+See [configuration reference](docs/configuration.md) for all active keys,
+precedence, legacy settings, and validation behavior.
+
+## Accounts and ingest
+
+Accounts share a database but have distinct source, classification, and export
+scope. Use portable directory names for account keys, such as `primary-gmail`;
+keys are also used in output paths and are not silently renamed.
 
 ```bash
-mboxer account add primary-gmail \
-  --display-name "Primary Gmail" \
-  --email user@example.com \
-  --config config/mboxer.yaml
-```
-
-**3. Verify the account was registered**
-
-```bash
+mboxer account add primary-gmail --display-name "Primary Gmail" \
+  --email user@example.com --config config/mboxer.yaml
 mboxer account list --config config/mboxer.yaml
+mboxer account show primary-gmail --config config/mboxer.yaml
+mboxer account update primary-gmail --display-name "Personal mail" \
+  --config config/mboxer.yaml
+
+mboxer ingest /path/to/archive.mbox --account primary-gmail \
+  --source-name "Gmail Takeout" --resume --config config/mboxer.yaml
 ```
 
-**4. Ingest a small test archive first** (see warning below)
+Replace `/path/to/archive.mbox` with an extracted MBOX. With exactly one account,
+account-scoped commands can auto-select it; with multiple accounts they require
+`--account`, except the explicit multi-account NotebookLM option below.
+
+| Ingest flag | Behavior |
+|---|---|
+| `--resume` | Continues a running/interrupted run for the same source from its checkpoint. |
+| `--extract-attachments` | Writes attachment files beneath `paths.attachments_dir`, grouped by account, year, and message, with source identity recorded in SQLite. |
+| `--create-account` | Creates the specified `--account` if absent. |
+| `--force` | Replaces the stored messages for that account/source in one transaction. |
+
+A changed MBOX at an existing account/path requires `--force`. Replacement also
+invalidates affected derived classifications, findings, and export-item links;
+classify, scan, and export again afterward. Failed or interrupted replacement
+rolls back database changes and removes newly created attachment payloads during
+handled failure recovery. Previous payload files are retained even after successful
+replacement; database/filesystem changes are not jointly crash-atomic. Existing
+published exports remain until a later export. See [ingest and recovery](docs/ingest-integrity.md).
+
+Normal ingest commits batches and records per-message errors. Its CLI exits `1`
+when errors occur and `130` on interruption; successful completion exits `0`.
+See [the walkthrough](HOWTO.md) before processing a large archive.
+
+## Classification and categories
+
+Rules run locally in their configured order; the first matching rule with an
+assignment wins. Match clauses use **OR**, not AND:
+
+- `from_domain` matches a domain in the sender or To-recipient list.
+- `from_contains` matches an address fragment in the sender or To-recipient list.
+- `subject_contains` matches a subject phrase.
+
+Cc and Bcc addresses are not included in these match predicates. At thread level,
+address matching aggregates senders and To recipients, and subject
+matching uses the first nonempty subject with reply/forward prefixes removed.
+`assign` records confidence `1.0`; `assign_hint` records `0.75`. Assignments carry
+a category and optional sensitivity, NotebookLM priority, and content profile.
+Priority and sensitivity are metadata; `export_profile` controls content handling.
 
 ```bash
-mboxer ingest data/mboxes/primary-gmail/sample.mbox \
-  --config config/mboxer.yaml \
-  --account primary-gmail \
-  --source-name "Sample" \
-  --extract-attachments \
-  --resume
+mboxer classify --level thread --account primary-gmail --config config/mboxer.yaml
+mboxer review-categories --account primary-gmail --config config/mboxer.yaml
 ```
 
-**5. Classify with rules**
+Thread results are inherited by messages unless an explicit message rule has
+equal or greater confidence. Classification skips already classified targets;
+editing rules and rerunning is not a general reclassification operation.
+
+Category paths are normalized into slash-delimited slugs. `taxonomy.locked_categories`
+seeds global category rows with a locked flag during classification; that flag is
+metadata, not a database deletion guard. Rules can assign paths outside that list.
+There is no category-deletion CLI.
+
+`review-categories` shows category classification-row counts and existing pending
+proposals. Counts may exceed distinct messages when retained classifications
+coexist. Rule classification does not generate proposals. To act on a known
+pending proposal ID, choose either approval or rejection:
 
 ```bash
-mboxer classify \
-  --config config/mboxer.yaml \
-  --account primary-gmail
+mboxer approve-category 123 --note "Reviewed" --config config/mboxer.yaml
+# Or: mboxer reject-category 123 --note "Not needed" --config config/mboxer.yaml
 ```
 
-**6. Review categories**
+Replace `123` with the actual ID. Approval creates or activates a category; it
+does not reclassify messages.
+
+## Export formats
+
+### NotebookLM Markdown
 
 ```bash
-mboxer review-categories \
-  --config config/mboxer.yaml \
-  --account primary-gmail
+mboxer export notebooklm --account primary-gmail --profile ultra_safe \
+  --out exports/notebooklm --config config/mboxer.yaml
 ```
 
-**7. Run a security scan**
+The output layout is `<out>/<account>/<category>/<year>/<category>-<year>-001.md`.
+Undated messages use `undated`. Packs contain an account/category header and each
+message's subject, sender, date, message ID, and projected body. Recipient lists
+and attachment references are not rendered into Markdown.
+
+`manifest.csv` and `manifest.json` accompany each account's packs. They describe
+source files, counts, hashes, limits, and export posture; the CSV is not a
+row-per-message export. Re-export replaces files owned by the previous generation
+and removes obsolete owned packs while preserving unrelated files. Modified
+managed files or conflicting destinations cause errors.
 
 ```bash
-mboxer security-scan \
-  --config config/mboxer.yaml \
-  --account primary-gmail
+mboxer export notebooklm --accounts primary-gmail,work-gmail \
+  --out exports/notebooklm --config config/mboxer.yaml
 ```
 
-**8. Dry-run export to verify output shape**
+Multi-account export processes each account separately, with a separate directory,
+source budget, and commit. It is not one combined source budget or transaction.
+
+### JSONL
 
 ```bash
-mboxer export notebooklm \
-  --config config/mboxer.yaml \
-  --account primary-gmail \
-  --profile ultra_safe \
-  --dry-run
+mboxer export jsonl --account primary-gmail \
+  --out exports/rag/messages.jsonl --config config/mboxer.yaml
 ```
 
-**9. Real export when ready**
+Each exported message becomes a JSON object containing stored metadata, projected
+body text, source information, and optional classification. The CLI inserts the
+account directory unless it already appears as a path component; this example
+writes `exports/rag/primary-gmail/messages.jsonl` and
+`exports/rag/primary-gmail/messages.manifest.json`.
 
-```bash
-mboxer export notebooklm \
-  --config config/mboxer.yaml \
-  --account primary-gmail \
-  --profile ultra_safe \
-  --out exports/notebooklm
-```
+`exports.jsonl.include_classification: false` hides classification metadata in the
+output, while content policy still applies. JSONL has no `--dry-run` option.
 
-> **Warning: test with a small MBOX before ingesting large archives.**
->
-> Gmail MBOX exports can exceed several gigabytes for long-lived accounts.
-> Before ingesting a full archive:
->
-> 1. Extract a small slice of messages into a separate `.mbox` file and ingest that first.
-> 2. Run `mboxer export notebooklm --dry-run` to verify the output shape.
-> 3. Review the generated exports locally before uploading anything to a cloud service.
->
-> `--resume` makes ingest restartable, but a full ingest of a large archive still takes
-> significant time and disk space. Export `--dry-run` performs the same projection and packing work using temporary
-> staging, without publishing output or recording export rows.
+## NotebookLM packing limits
 
-## Getting a Gmail MBOX file
+`--profile` selects a local size-limit preset. These preset names and numbers are
+MBoxer configuration, not a claim about current NotebookLM subscription quotas.
 
-You can export Gmail data from Google Takeout / Google Data Request.
-
-The typical flow is:
-
-1. Request an export of your Gmail data.
-2. Download the archive from Google.
-3. Extract the downloaded archive locally.
-4. Locate the `.mbox` file.
-5. Ingest the `.mbox` file with `mboxer`.
-6. Export organized Markdown files for NotebookLM.
-
-Example:
-
-```bash
-mboxer ingest data/mboxes/archive.mbox \
-  --config config/mboxer.yaml \
-  --source-name "Primary Gmail Archive" \
-  --account primary-gmail \
-  --extract-attachments \
-  --resume
-```
-
-## Intended workflow
-
-```bash
-mboxer ingest data/mboxes/archive.mbox \
-  --config config/mboxer.yaml \
-  --source-name "Primary Gmail Archive" \
-  --account primary-gmail \
-  --extract-attachments \
-  --resume
-
-mboxer classify \
-  --config config/mboxer.yaml \
-  --account primary-gmail \
-  --level thread
-
-mboxer review-categories \
-  --config config/mboxer.yaml \
-  --account primary-gmail
-
-mboxer security-scan \
-  --config config/mboxer.yaml \
-  --account primary-gmail
-
-mboxer export notebooklm \
-  --config config/mboxer.yaml \
-  --account primary-gmail \
-  --profile ultra_safe \
-  --out exports/notebooklm
-
-mboxer export jsonl \
-  --config config/mboxer.yaml \
-  --account primary-gmail \
-  --out exports/rag/messages.jsonl
-```
-
-## Configuration and global flags
-
-Runtime commands accept two common flags (`config-example` only prints the bundled YAML):
-
-- `--config PATH` — path to your YAML config. An explicit missing or invalid file is an error.
-  If omitted, a local `config/mboxer.example.yaml` takes precedence over bundled defaults.
-  A `config/mboxer.yaml` file is used only when explicitly selected.
-- `--db PATH` — override the SQLite database path. Otherwise the path comes from `paths.database`
-  (then `project.default_database`) in config, defaulting to `var/mboxer.sqlite`.
-
-Print the canonical example with `mboxer config-example`; its source is
-`src/mboxer/defaults.yaml`. It covers ingest batch size, classification rules, locked taxonomy,
-security/redaction policy, NotebookLM limit profiles, and JSONL options. Unimplemented
-placeholder settings have been removed from the example; old copies remain ignored.
-Ingest resume and attachment extraction use CLI flags. NotebookLM `format` and `split_strategy` settings
-are descriptive manifest metadata, not configurable behavior. There is no environment-variable
-configuration support.
-
-### Account commands
-
-```bash
-mboxer account add <key> --display-name "..." --email you@example.com [--provider gmail] [--notes "..."]
-mboxer account list
-mboxer account show <key>
-mboxer account update <key> [--display-name "..."] [--email ...] [--notes "..."]
-```
-
-When exactly one account exists it is auto-selected (with a notice). When more than one exists,
-account-scoped commands require `--account <key>` (or `--accounts key1,key2` for a combined
-NotebookLM export).
-
-### Useful ingest flags
-
-- `--resume` — restart an interrupted ingest from its last checkpoint.
-- `--extract-attachments` — extract attachments to `data/attachments/` with SHA-256 + content type.
-- `--create-account` — create the `--account` key on the fly if it does not exist yet.
-- `--force` — reprocess messages even if already present.
-
-## Multi-account support
-
-`mboxer` supports multiple separate Gmail accounts and archives in the same local project.
-
-Each ingested source is tracked by account, source name, import run, and original MBOX file.
-
-Example account keys:
-
-```text
-primary-account
-work-account
-business-archive
-organization-archive
-project-archive
-```
-
-To export multiple accounts into a single NotebookLM run:
-
-```bash
-mboxer export notebooklm \
-  --config config/mboxer.yaml \
-  --accounts primary-account,work-account \
-  --profile ultra_safe \
-  --out exports/notebooklm
-```
-
-## NotebookLM source-pack strategy
-
-NotebookLM exports are Markdown-first and organized by category directories.
-
-Filenames remain meaningful even if the folder hierarchy is flattened during upload.
-
-```text
-category-topic-year-sequence.md
-```
-
-Examples:
-
-```text
-finance-invoices-2024-001.md
-legal-contracts-2023-2024-001.md
-projects-product-launch-2026-001.md
-operations-vendor-correspondence-2025-001.md
-research-literature-review-2024-001.md
-support-customer-requests-2025-001.md
-```
-
-## Profiles: two independent controls
-
-`mboxer` has **two** different "profile" settings on `export notebooklm`, and they do different
-things:
-
-| CLI flag | What it controls | Allowed values |
-|---|---|---|
-| `--profile` | NotebookLM **size limits** (how many source files, how big) | `standard`, `plus`, `pro`, `ultra`, `ultra_safe` |
-| `--export-profile` | **Content** posture (how much of each message is exported) | `raw`, `reviewed`, `scrubbed`, `metadata-only` |
-
-They are covered separately below.
-
-## NotebookLM limit profiles (`--profile`)
-
-Limit profiles bound how many source files an export produces and how large each one gets.
-They are defined in the bundled example (`mboxer config-example`).
-
-| Profile | Max sources | Reserved | Target sources | Target words/source |
-|---|---|---|---|---|
+| Preset | Max sources | Reserved sources | Target sources | Target words/source |
+|---|---:|---:|---:|---:|
 | `standard` | 50 | 10 | 40 | 300,000 |
 | `plus` | 100 | 20 | 80 | 300,000 |
 | `pro` | 300 | 50 | 250 | 300,000 |
 | `ultra` | 600 | 75 | 525 | 300,000 |
-| `ultra_safe` | 600 | 100 | 450 | 225,000 |
+| `ultra_safe` (default) | 600 | 100 | 450 | 225,000 |
 
-Use `ultra_safe` as the default for large NotebookLM-oriented workflows where you want to preserve headroom for manual sources, attachments, PDFs, and later additions.
+The hard budget is `max_sources - reserved_sources` for one account. Complete
+rendered UTF-8 files, including headers and separators, must fit hard byte, word,
+and message limits. The exporter never truncates a stored message to satisfy a
+packing cap. Threads may cross file boundaries. Target bytes/words are preferred
+split points; `target_sources` is a warning/planning value, not a packing target.
 
-Source, word, and byte limits can be overridden on the CLI;
-`max_messages_per_source` is configured in YAML:
+CLI overrides are `--max-sources`, `--reserved-sources`, `--target-sources`,
+`--max-words`, `--target-words`, `--max-mb`, and `--target-mb`; message caps are YAML
+settings. The `*-mb` flags use MiB (1,048,576 bytes). `--allow-full-source-budget`
+sets reserved slots to zero. Export `--force` permits a configured ceiling above
+200 MiB; it does not bypass the selected hard limits or force file replacement.
 
-```bash
-mboxer export notebooklm \
-  --profile ultra_safe \
-  --max-sources 400 \
-  --target-words 200000
-```
+`--dry-run` performs projection and packing using temporary disk space but does
+not publish files or record export rows. It does not verify destination ownership
+or publication locks. Body processing uses disk staging rather than retaining all
+archive text in memory. Temporary disk usage and the largest message still matter;
+ingest and thread classification have their own memory requirements.
 
-Full set of limit overrides: `--max-sources`, `--reserved-sources`, `--target-sources`,
-`--target-words`, `--max-words`, `--target-mb`, `--max-mb`. Two escape hatches relax the
-built-in guardrails:
+See [packing, publication, and recovery](docs/notebooklm-limits.md) for stale-file
+ownership, cross-filesystem publication, and failure recovery. Filesystem changes
+and SQLite commits are not jointly crash-atomic.
 
-- `--allow-full-source-budget` — allow the export to use the full `max_sources` budget
-  (ignore `reserved_sources` headroom).
-- `--force` — override the 200 MB per-source safety ceiling.
+## Content profiles and security
 
-## Export content profiles (`--export-profile`)
+`--export-profile` controls content independently of the NotebookLM size `--profile`.
+Without an override, exporters select one effective classification per message,
+using confidence and direct-rule precedence. Equally ranked conflicting policies
+block export. Unclassified messages use `security.default_export_profile`, whose
+bundled value is `scrubbed`.
 
-Content profiles decide how much of each message body actually leaves the database. Every message
-gets an effective profile from its classification rule (`export_profile:` in a rule) or, failing
-that, from `security.default_export_profile` (the example config uses `scrubbed`).
-
-| Profile | Effect on the exported body |
+| Content profile | Export behavior |
 |---|---|
-| `raw` | Full body text, unchanged. Output is local; upload restrictions are not enforced. |
-| `reviewed` | Treated like `scrubbed` today: redaction passes are applied. |
-| `scrubbed` | Sensitive patterns redacted per `security.redact_*` policy. |
-| `metadata-only` | Body text dropped; only headers/metadata are exported. |
-| `exclude` | Message is omitted from the export entirely. |
+| `raw` | Stored normalized body is unchanged. |
+| `reviewed` | Same body-redaction path as `scrubbed`; no human-review state is checked. |
+| `scrubbed` | Configured regex redactions apply when `security.scrub_enabled` is true. |
+| `metadata-only` | Body is omitted; message metadata remains. |
+| `exclude` | Message is omitted. |
 
-`--export-profile` overrides the effective profile for a whole run, but only accepts
-`raw`, `reviewed`, `scrubbed`, or `metadata-only`. `exclude` is **not** a CLI choice — it is applied
-per message through classification rules or config, so that "do not export" stays a governed,
-per-category decision rather than a global switch.
+The CLI accepts the first four profiles. An explicit `--export-profile` overrides
+per-message policy, **including `exclude`**, and can resolve a policy conflict.
+Omit it when classification-specific restrictions should remain in effect.
 
-### Residual-findings gate (`--findings-policy`)
-
-After a record is projected for export, the projected text is scanned again. `--findings-policy`
-(default from `security.on_residual_findings`, which the example config sets to `warn`) controls what
-happens if detected-sensitive patterns survive:
-
-- `allow` — write the export; record residual counts in the manifest.
-- `warn` — write the export, record counts, and print a counts-only warning.
-- `block` — abort before publishing output or export ledger rows; the command exits
-  with status `2`. Temporary staging may have been written and is cleaned up.
-
-## Classification strategy
-
-Classification uses deterministic rules, with no network calls.
-
-Rules match on sender domain, sender address fragment, and subject keywords.
-Each rule assigns a `category_path`, `sensitivity`, `notebooklm_priority`, and `export_profile`.
-
-At thread level, a matching rule is applied to the whole thread and then inherited down to all messages in the thread.
-
-Rules support two assignment modes:
-
-- `assign` — confident match, confidence 1.0
-- `assign_hint` — soft match, confidence 0.75
-
-Classification can be scoped by account and run at `message` or `thread` level.
-`classification.level` sets the default (bundled value: `thread`); `--level` takes
-precedence. An invalid configured level is an error before classification:
-
+Scanning and redaction cover stored/projected **body text only**. Subjects,
+addresses in headers, category names, account keys, and attachment content are not
+scrubbed or checked by the export residual gate. Metadata-only output is therefore
+not an anonymized export. Detectors cover email addresses, phone numbers,
+SSN-like values, and credit-card-like values using regexes; there is no semantic
+PII detection, attachment scanning, quarantine, or malware analysis.
 
 ```bash
-mboxer classify --level thread --account primary-gmail
+mboxer security-scan --account primary-gmail --config config/mboxer.yaml
+mboxer export notebooklm --account primary-gmail --findings-policy block \
+  --config config/mboxer.yaml
 ```
 
-## Category taxonomy
+`security-scan` stores local findings, including short matching excerpts; it does
+not redact database bodies. Export always scans the projected body again,
+independently of `security.scan_enabled`:
 
-Categories are slash-delimited paths that become directory hierarchies in exports.
+| Findings policy | Result |
+|---|---|
+| `allow` | Publish and record residual counts. |
+| `warn` (default) | Publish, record counts, and print a counts-only warning. |
+| `block` | Exit `2` before publishing files or new export ledger rows. |
 
-```text
-medical
-medical/hospital-billing
-medical/pharmacy
-legal
-legal/law-firm-correspondence
-finance
-household/utilities
-postal/usps-informed-delivery
-noise/marketing
-noise/spam
-```
+A zero finding count means these patterns were not detected in projected bodies,
+not that an export contains no sensitive information. All output remains local;
+MBoxer does not enforce upload destinations or encrypt the database and exports.
 
-Locked categories are defined in config and cannot be deleted.
+## Development and releases
 
-Proposal review and approval are implemented, but rule classification does not
-generate proposals. Existing pending database proposals appear in
-`review-categories`; approval creates or activates their category:
+[CONTRIBUTING.md](CONTRIBUTING.md) covers branches, PRs, verification, and releases.
+[tests/README.md](tests/README.md) explains test subsets and golden fixtures.
+[Performance measurements](docs/performance.md) describes repeatable synthetic
+benchmarks.
 
 ```bash
-mboxer approve-category <proposal_id>
-mboxer reject-category <proposal_id>
-```
-
-## Security stance
-
-`mboxer` assumes mail archives contain sensitive material.
-
-All exporters write local files. A `raw` export retains sensitive body text;
-there is no upload or destination enforcement.
-
-The security pipeline:
-
-```text
-ingest
-  → normalize
-  → classify
-  → security-scan
-  → export projection and scrubbing
-  → residual findings check
-  → local files
-```
-
-The `security` config block controls the default content posture, the residual-findings gate, and
-which redaction passes run before export:
-
-```yaml
-security:
-  default_export_profile: scrubbed       # fallback content profile when no rule sets one
-  scan_enabled: true
-  scrub_enabled: true
-  on_residual_findings: warn             # allow | warn | block (maps to --findings-policy)
-  # Attachment scanning and quarantine are not implemented.
-  redact_email_addresses: true
-  redact_phone_numbers: true
-  redact_ssn_like_numbers: true
-  redact_credit_card_like_numbers: true
-  # physical_addresses is a reserved/planned detector name, not active today
-```
-
-Detection today is a deterministic in-process **regex** registry covering email addresses, phone
-numbers, SSN-like values, and credit-card-like values. Physical-address, medical, legal, and
-credential detectors are reserved future names, not active detection or scrubbing.
-
-Cloud-oriented exports should use `reviewed`, `scrubbed`, or `metadata-only` content profiles.
-
-## Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch workflow and verification guide.
-
-```bash
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 python tests/fixtures/make_synthetic.py
-pytest
+python -m pytest
+python -m ruff check src/
+python -m mypy src/
 ```
 
-Linting and type checking:
+CI runs on PRs and pushes to `dev` and `master`. The full path runs Ruff/mypy,
+Python 3.11/3.12 tests, coverage on 3.11, and an installed-wheel smoke test outside
+the checkout. Known documentation-only paths can skip expensive jobs while
+completing `CI gate`; README changes run full checks because README is package
+metadata. A separate randomized-order canary runs weekly and manually.
 
-```bash
-ruff check src/
-mypy src/
-```
+Versions come from git tags through `setuptools-scm`. Publishing a GitHub Release
+triggers the distribution-build/PyPI workflow; there is no automatic version bump
+on merge.
 
-CI checks PRs and pushes to `dev` and `master`. It combines Ruff/mypy, tests Python 3.11
-and 3.12 (coverage on 3.11), and builds/installs a wheel in an isolated environment outside
-the checkout. Configure the stable **CI gate** check as required in branch protection;
-docs-only changes still complete that gate. Superseded runs are cancelled. Randomized
-test order runs weekly and on demand.
-Runtime migration tests run with the suite; there is no separate snapshot-only schema check.
+## Scope and limitations
 
-To verify a distribution locally:
+The implemented interface is a local CLI. There is no web UI, Gmail API sync,
+full-text search command, LLM classifier, automatic category-proposal generator,
+row-per-message CSV export, or external delivery. JSONL and SQLite provide inputs
+for other tools rather than implementing a RAG service themselves.
 
-```bash
-python -m pip install build
-python -m build
-python scripts/smoke_wheel.py dist/*.whl
-```
-
-Keep only the wheel being tested in `dist/` when using the wildcard. Build artifacts are
-ignored by Git. Test fixtures are synthetic; regenerate them with:
-
-```bash
-python tests/fixtures/make_synthetic.py
-```
-
-## Design goals
-
-`mboxer` should be:
-
-- NotebookLM-friendly
-- Gmail MBOX-focused
-- local-first
-- privacy-conscious
-- resumable
-- inspectable
-- useful without a cloud service
-- useful with local LLMs
-- useful with future RAG systems
-- safe for sensitive archives
-- flexible enough for multiple Gmail accounts
-- structured enough to support future application features
-
-## Non-goals
-
-`mboxer` is not intended to be:
-
-- a Gmail client
-- a replacement for Gmail search
-- a hosted SaaS product
-- a tool that uploads raw email archives by default
-- a black-box AI classifier
-- a cloud-first archive processor
-
-## Troubleshooting / FAQ
-
-**`Config file not found: config/mboxer.yaml`**
-You passed an explicit config path that does not exist. Create its parent directory, run
-`mboxer config-example > config/mboxer.yaml`, then edit it; or omit `--config` to use defaults.
-
-**`<command> requires --account when multiple accounts exist`**
-More than one account is registered. Pass `--account <key>`; list keys with `mboxer account list`.
-
-**`Unknown NotebookLM profile 'x'. Available: ...`**
-`--profile` must be one of `standard`, `plus`, `pro`, `ultra`, `ultra_safe` (or a profile you added
-under `exports.notebooklm.profiles`).
-
-**`effective source budget is zero; reduce reserved_sources`**
-`reserved_sources` is greater than or equal to `max_sources` for the chosen profile. Lower it, or
-pass `--allow-full-source-budget`.
-
-**`max_bytes_per_source exceeds 200 MB safety limit; pass --force to override`**
-A per-source byte limit above 200 MB is rejected by default. Pass `--force` only if you really intend
-sources that large.
-
-**`BLOCKED: would export residual detected-sensitive items ...` (exit code 2)**
-Your findings policy is `block` and the projected export text still contains detected-sensitive
-patterns. Scrub/redact further, move the affected categories to `metadata-only`/`exclude`, or rerun
-with `--findings-policy warn` (or `allow`) if that is acceptable for the run.
-
-**`mboxer: command not found`**
-Activate the virtualenv and install the package: `source .venv/bin/activate && pip install -e .`.
-
-**Ingesting a full archive is slow or huge.**
-Expected — Gmail archives can be many GB. Slice a small `.mbox` first, use `--resume`, and validate
-shape with `mboxer export notebooklm --dry-run` before a real export.
-
-**Does classification use an LLM?**
-No. Classification uses deterministic rules. The unused Ollama configuration
-example and `classify --model` placeholder have been removed; `--model` is now
-rejected instead of silently running rule classification.
-
-## Releases
-
-The package version is derived from git tags by `setuptools-scm` — there is no hand-edited version
-string in `pyproject.toml`. The most recent `vX.Y.Z` tag determines the version of a build.
-
-Publishing is **manual and tag/release-driven**:
-
-1. Push a semantic-version tag, e.g. `git tag v0.2.0 && git push origin v0.2.0`.
-2. Create a GitHub Release for that tag.
-3. Publishing the GitHub Release triggers `.github/workflows/publish.yml`, which builds the sdist
-   and wheel (`python -m build`) and uploads them to PyPI using trusted publishing (OIDC, the `pypi`
-   environment) — no API token is stored in the repo.
-
-There is no automatic patch-bump-on-merge workflow; choosing the next version number is a deliberate
-step you take when you tag a release.
+MBoxer is designed for inspectable, account-scoped archive processing. Preserve
+original archives, review retention settings before ingest, and inspect exported
+metadata as well as bodies before sharing.
 
 ## License
 
