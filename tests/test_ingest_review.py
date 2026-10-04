@@ -10,10 +10,8 @@ from _factories import make_mbox
 
 import mboxer.classify as classify_module
 import mboxer.ingest as ingest_module
-from mboxer.classify import run_rule_classification
 from mboxer.exporters.jsonl import export_jsonl
 from mboxer.exporters.notebooklm import export_notebooklm
-from mboxer.ingest import ingest_mbox
 from mboxer.limits import NotebookLMLimits
 
 PROTECTED_ID = "<protected@example.test>"
@@ -33,7 +31,7 @@ def _write_source(path, message_id, subject, references=None):
 
 
 def _ingest(path, db, config, **kwargs):
-    return ingest_mbox(path, db_path=db, config=config, account_key="test-gmail", **kwargs)
+    return ingest_module.ingest_mbox(path, db_path=db, config=config, account_key="test-gmail", **kwargs)
 
 
 def _export_flags(conn, config, destination, account_id, format_name):
@@ -75,7 +73,7 @@ def test_force_retains_untouched_export_policy_until_successful_reclassification
     _ingest(changed_path, tmp_db, config)
     expected = (profile != "exclude", False)
     with sqlite3.connect(tmp_db) as conn:
-        run_rule_classification(conn, config, level="thread", account_id=account_id)
+        classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)
         original_message = conn.execute("SELECT * FROM messages WHERE message_id=?", (PROTECTED_ID,)).fetchone()
         assert _export_flags(conn, config, tmp_path / "before", account_id, format_name) == expected
 
@@ -90,12 +88,12 @@ def test_force_retains_untouched_export_policy_until_successful_reclassification
         # No matching rule is not a successful replacement of prior policy.
         unmatched = {**config, "rules": [{"name": "unmatched", "match": {"subject_contains": ["missing"]},
                                          "assign": {"category_path": "other", "export_profile": "raw"}}]}
-        run_rule_classification(conn, unmatched, level="thread", account_id=account_id)
+        classify_module.run_rule_classification(conn, unmatched, level="thread", account_id=account_id)
         assert _export_flags(conn, config, tmp_path / "unmatched", account_id, format_name) == expected
 
         # An explicit fresh rule result can replace the retained classification.
         config["rules"][0]["assign"].update(category_path="refreshed", export_profile="raw")
-        assert run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
+        assert classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
         rows = conn.execute(
             "SELECT category_path,export_profile FROM classifications WHERE message_db_id=? AND classifier_type='rule_inherited'",
             (original_message[0],),
@@ -116,7 +114,7 @@ def test_failed_reclassification_restores_previous_inherited_policies(
     _ingest(protected_path, tmp_db, config)
     _ingest(changed_path, tmp_db, config)
     with sqlite3.connect(tmp_db) as conn:
-        run_rule_classification(conn, config, level="thread", account_id=account_id)
+        classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)
     _write_source(changed_path, "<replacement@example.test>", "Other", PROTECTED_ID)
     _ingest(changed_path, tmp_db, config, force=True)
     config["rules"][0]["assign"]["export_profile"] = "raw"
@@ -130,12 +128,12 @@ def test_failed_reclassification_restores_previous_inherited_policies(
             BEGIN SELECT RAISE(ABORT,'synthetic inheritance failure'); END;
         """)
         with pytest.raises(sqlite3.IntegrityError, match="synthetic inheritance failure"):
-            run_rule_classification(conn, config, level="thread", account_id=account_id)
+            classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)
         conn.commit()  # The helper must restore policy before returning failure.
         assert conn.execute("SELECT * FROM classifications ORDER BY id").fetchall() == before
         assert _export_flags(conn, config, tmp_path / "failed", account_id, "jsonl") == (False, False)
         conn.execute("DROP TRIGGER fail_second_inheritance")
-        assert run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
+        assert classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
         assert _export_flags(conn, config, tmp_path / "retried", account_id, "jsonl") == (True, True)
 
 
@@ -151,7 +149,7 @@ def test_successful_reclassification_retires_old_inheritance_when_explicit_rule_
     _ingest(protected_path, tmp_db, config)
     _ingest(changed_path, tmp_db, config)
     with sqlite3.connect(tmp_db) as conn:
-        run_rule_classification(conn, config, level="thread", account_id=account_id)
+        classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)
         protected_id = conn.execute("SELECT id FROM messages WHERE message_id=?", (PROTECTED_ID,)).fetchone()[0]
         conn.execute(
             "INSERT INTO classifications(account_id,target_type,message_db_id,thread_key,category_path,export_profile,classifier_type,confidence) "
@@ -163,7 +161,7 @@ def test_successful_reclassification_retires_old_inheritance_when_explicit_rule_
     config["rules"] = [{"name": "fresh", "match": {"from_domain": ["example.test"]},
                         "assign_hint": {"category_path": "fresh", "export_profile": "exclude"}}]
     with sqlite3.connect(tmp_db) as conn:
-        assert run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
+        assert classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
         assert conn.execute(
             "SELECT classifier_type,confidence,export_profile FROM classifications WHERE message_db_id=?",
             (protected_id,),
@@ -194,11 +192,11 @@ def test_reclassification_cannot_apply_old_policy_after_concurrent_source_replac
         with monkeypatch.context() as patch:
             patch.setattr(classify_module, "_build_thread_input", replace_after_read)
             with pytest.raises(sqlite3.OperationalError, match="locked"):
-                run_rule_classification(conn, config, level="thread", account_id=account_id)
+                classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)
         conn.commit()
         assert conn.execute("SELECT subject FROM messages").fetchall() == [("Private",)]
         assert conn.execute("SELECT COUNT(*) FROM classifications").fetchone() == (0,)
-        assert run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
+        assert classify_module.run_rule_classification(conn, config, level="thread", account_id=account_id)["classified"] == 1
         assert conn.execute("SELECT DISTINCT export_profile FROM classifications").fetchall() == [("exclude",)]
         assert _export_flags(conn, config, tmp_path / "current", account_id, "jsonl") == (False, False)
 

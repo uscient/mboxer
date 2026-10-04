@@ -278,6 +278,66 @@ def test_output_path_truncates_overlong_extensionless_filename():
     assert len(p.name) <= 120
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("original,expected", [
+    ("界" * 120 + ".pdf", "界" * 83 + ".pdf"),
+    ("𐐀" * 120 + ".txt", "𐐀" * 62 + ".txt"),
+    ("界" * 120, "界" * 85),
+    ("界" * 120 + "." + "文" * 10, "界" * 74 + "." + "文" * 10),
+    ("a." + "界" * 100, "a." + "界" * 84),
+], ids=["cjk-pdf", "four-byte-txt", "no-extension", "multibyte-extension", "huge-extension"])
+def test_output_path_bounds_utf8_bytes_without_splitting_characters(original, expected):
+    path = attachment_output_path(
+        base_dir=Path("/x"), account_key="a", date_str="2024-01-01",
+        message_id="<m@x>", filename=original,
+    )
+    assert path.name == expected
+    assert len(path.name.encode("utf-8")) <= 255
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("filename", [
+    "界" * 120 + ".pdf",
+    "𐐀" * 120 + ".txt",
+    "界" * 120,
+    "界" * 120 + "." + "文" * 10,
+    "a." + "界" * 100,
+], ids=["cjk-pdf", "four-byte-txt", "no-extension", "multibyte-extension", "huge-extension"])
+def test_extract_multibyte_names_reserve_collision_suffix_bytes(conn, make_msg, tmp_path, filename):
+    payloads = [f"synthetic attachment {idx}".encode() for idx in range(12)]
+    msg = make_msg(attachments=[
+        (filename, payload, "application/octet-stream") for payload in payloads
+    ])
+
+    rows = _extract(conn, msg, tmp_path / "attachments")
+
+    assert all(row["extraction_status"] == "extracted" for row in rows)
+    paths = [Path(row["storage_path"]) for row in rows]
+    assert len(set(paths)) == len(payloads)
+    assert all(len(path.name.encode("utf-8")) <= 255 for path in paths)
+    assert [path.read_bytes() for path in paths] == payloads
+    assert all(row["original_filename"] == filename for row in rows)
+    if filename.endswith(".pdf"):
+        assert paths[1].name == "界" * 83 + "-1.pdf"
+        assert paths[10].name == "界" * 82 + "-10.pdf"
+
+
+@pytest.mark.integration
+def test_truncated_ascii_name_with_empty_extension_keeps_existing_collision_paths(conn, make_msg, tmp_path):
+    filename = "a" * 119 + "." + "b" * 20
+    msg = make_msg(attachments=[
+        (filename, b"one", "application/octet-stream"),
+        (filename, b"two", "application/octet-stream"),
+    ])
+
+    rows = _extract(conn, msg, tmp_path / "attachments")
+
+    assert all(row["extraction_status"] == "extracted" for row in rows)
+    assert [Path(row["storage_path"]).name for row in rows] == [
+        "a" * 119 + ".", "a" * 119 + "-1",
+    ]
+
+
 @pytest.mark.integration
 def test_extract_duplicate_extensionless_names_get_suffixed(conn, make_msg, tmp_path):
     """A second extensionless file with the same name is suffixed as 'name-1'

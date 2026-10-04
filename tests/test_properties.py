@@ -89,6 +89,7 @@ def test_normalize_category_path_invariants(s):
 @example(None, 3)
 @example("", 0)
 @example("\x00/\x01", 0)
+@example("界" * 120 + ".pdf", 0)
 @pytest.mark.unit
 def test_safe_attachment_filename_cannot_escape_directory(name, idx):
     safe = _safe_attachment_filename(name, idx)
@@ -97,6 +98,7 @@ def test_safe_attachment_filename_cannot_escape_directory(name, idx):
     assert "\x00" not in safe                     # no null byte
     assert all(ord(c) >= 32 for c in safe)        # no control chars
     assert len(safe) <= ATT_STEM + 11             # bounded (stem[:120] + '.' + ext<=10)
+    assert len(safe.encode("utf-8")) <= 255       # filesystem component byte budget
     # As a child of ANY base directory it stays inside that base (no traversal).
     base = PurePosixPath("/safe/base")
     assert (base / safe).parent == base
