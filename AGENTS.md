@@ -7,6 +7,7 @@ classifying and scanning messages, and exporting NotebookLM Markdown or JSONL.
 
 - [README.md](README.md): capabilities, configuration, and command reference.
 - [HOWTO.md](HOWTO.md): first-run walkthrough.
-- [PROJECT.md](PROJECT.md): implementation map and shared components.
+- [PROJECT.md](PROJECT.md): implementation map, shared components, and detailed references.
+- [Configuration](docs/configuration.md): file selection, defaults, and active settings.
 - [CONTRIBUTING.md](CONTRIBUTING.md): development, PRs, and verification.
 - [tests/README.md](tests/README.md): fixtures and test commands.
