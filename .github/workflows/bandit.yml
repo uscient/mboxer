@@ -37,7 +37,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Bandit Scan
-        uses: shundor/python-bandit-scan@ab1d87dfccc5a0ffab88be3aaac6ffe35c10d6cd
+        uses: shundor/python-bandit-scan@9955228c1cbdc5aeb5e511e0fa232154e2ed2b67
         with:
           exit_zero: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
